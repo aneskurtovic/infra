@@ -1,0 +1,12 @@
+# Edge site for the Woodpecker CI UI.
+#
+# Dropped into the host's Caddy sites directory (imported by the main Caddyfile).
+# Caddy owns :80/:443 and auto-issues Let's Encrypt for this hostname, then
+# reverse-proxies to the Woodpecker server on the shared `edge` network.
+#
+# First issuance needs a brief DNS-only (grey-cloud) window if the record is
+# proxied; renewals work fine while proxied. See BOOTSTRAP.md.
+ci.aneskurtovic.com {
+	encode zstd gzip
+	reverse_proxy woodpecker-server:8000
+}

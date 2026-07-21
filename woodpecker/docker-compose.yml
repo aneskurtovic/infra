@@ -1,0 +1,105 @@
+# Self-hosted Woodpecker CI — server + one Docker agent.
+#
+# This file is safe to publish: it contains only variable *references*. Every
+# real secret (GitHub OAuth client secret, agent token) is read at runtime from
+# root-only env files under /opt/ci that are never committed. See BOOTSTRAP.md.
+#
+# Bring up with:
+#   docker compose --env-file /opt/ci/.env -f docker-compose.yml up -d
+name: woodpecker
+
+services:
+  woodpecker-server:
+    image: woodpeckerci/woodpecker-server:v3.16.0
+    container_name: woodpecker-server
+    restart: unless-stopped
+    env_file:
+      # Real OAuth client secret only. Root-only, never committed.
+      - /opt/ci/server-oauth.env
+    environment:
+      WOODPECKER_HOST: https://${CI_DOMAIN:?CI_DOMAIN is required}
+      WOODPECKER_OPEN: "false"
+      WOODPECKER_ADMIN: ${WOODPECKER_ADMIN:?WOODPECKER_ADMIN is required}
+      WOODPECKER_REPO_OWNERS: ${WOODPECKER_REPO_OWNERS:?WOODPECKER_REPO_OWNERS is required}
+      WOODPECKER_GITHUB: "true"
+      WOODPECKER_GITHUB_CLIENT: ${WOODPECKER_GITHUB_CLIENT:?WOODPECKER_GITHUB_CLIENT is required}
+      # Open only for the one-time agent bootstrap, then flip back to true.
+      WOODPECKER_DISABLE_USER_AGENT_REGISTRATION: ${WOODPECKER_DISABLE_USER_AGENT_REGISTRATION:-true}
+      WOODPECKER_FORCE_IGNORE_SERVICE_FAILURE: "false"
+    volumes:
+      - woodpecker-server-data:/var/lib/woodpecker
+    networks:
+      # ci-network: private server<->agent link. edge: reached by the TLS proxy.
+      - ci-network
+      - edge
+    expose:
+      - "8000"
+      - "9000"
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  woodpecker-agent:
+    image: woodpeckerci/woodpecker-agent:v3.16.0
+    container_name: woodpecker-agent
+    restart: unless-stopped
+    command: agent
+    env_file:
+      # Contains only WOODPECKER_AGENT_SECRET for this named runner. Host-only.
+      - /opt/ci/agent.env
+    depends_on:
+      woodpecker-server:
+        condition: service_healthy
+    environment:
+      WOODPECKER_SERVER: woodpecker-server:9000
+      # One workflow at a time: this box also runs application services, so CI
+      # must never contend with them. Scale by adding an agent host, not by
+      # raising this number.
+      WOODPECKER_MAX_WORKFLOWS: "1"
+      WOODPECKER_HOSTNAME: aneskurtovic-docker-agent
+      WOODPECKER_HEALTHCHECK: "true"
+      WOODPECKER_HEALTHCHECK_ADDR: :3000
+      WOODPECKER_BACKEND_DOCKER_LIMIT_MEM: "2147483648"
+      WOODPECKER_BACKEND_DOCKER_LIMIT_MEM_SWAP: "3221225472"
+    volumes:
+      - woodpecker-agent-config:/etc/woodpecker
+      # The agent needs the Docker socket to create step containers. Workflow
+      # containers do NOT inherit it — keep the repo untrusted (no volumes/privileged).
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - ci-network
+    expose:
+      - "3000"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  ci-network:
+    external: true
+    name: ci-network
+  edge:
+    external: true
+    name: edge
+
+volumes:
+  woodpecker-server-data:
+    name: woodpecker-server-data
+  woodpecker-agent-config:
+    name: woodpecker-agent-config

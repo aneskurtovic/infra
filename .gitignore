@@ -1,0 +1,16 @@
+# Never commit real secrets or host-only env files.
+# The committed config references these by variable; the values live on the box.
+.env
+*.env
+!.env.example
+
+# SSH / TLS material must never enter version control.
+*.key
+*.pem
+id_ed25519*
+id_rsa*
+known_hosts
+
+# Editor / OS noise
+.DS_Store
+*.swp
