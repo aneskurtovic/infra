@@ -56,9 +56,11 @@ services:
     env_file:
       # Contains only WOODPECKER_AGENT_SECRET for this named runner. Host-only.
       - /opt/ci/agent.env
+    # Start-ordering only. The server image ships no HEALTHCHECK, so a
+    # `condition: service_healthy` here would make `up --wait` fail; the agent
+    # retries its gRPC connection to the server on its own until it's ready.
     depends_on:
-      woodpecker-server:
-        condition: service_healthy
+      - woodpecker-server
     environment:
       WOODPECKER_SERVER: woodpecker-server:9000
       # One workflow at a time: this box also runs application services, so CI
