@@ -76,6 +76,7 @@ woodpecker/
 uptime-kuma/
   docker-compose.yml   # availability dashboard (edge network, external data volume)
   MIGRATION.md         # move from Ludo's stack, preserving monitor history
+  OPERATIONS.md        # steady-state runbook: monitors, notifications, backup/restore
 caddy/
   ci.aneskurtovic.caddy       # edge site for the CI UI
   uptime.aneskurtovic.caddy   # edge site for the monitoring dashboard (basic_auth via env)
