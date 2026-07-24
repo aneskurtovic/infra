@@ -1,0 +1,56 @@
+# Uptime Kuma — private availability dashboard for every project on the box.
+#
+# Neutral, platform-owned (moved off Ludo's compose). Joins the shared `edge`
+# network so the edge proxy (Caddy) can reverse-proxy to it; it has NO Docker
+# socket — Kuma uses network probes only, so a compromised dashboard cannot
+# touch the daemon.
+#
+# The data volume is `external: true` on purpose: the monitor config + history
+# is precious, so it must be deliberately created/migrated, never auto-created
+# empty by `compose up`. See MIGRATION.md (from Ludo) or, for a fresh box:
+#   docker volume create uptime-kuma-data
+#
+# Bring up with:
+#   docker compose -f docker-compose.yml up -d
+name: uptime-kuma
+
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:2.3.2
+    container_name: uptime-kuma
+    restart: unless-stopped
+    stop_grace_period: 30s
+    volumes:
+      - uptime-kuma-data:/app/data
+    networks:
+      - edge
+    expose:
+      - "3001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  edge:
+    external: true
+    name: edge
+
+volumes:
+  uptime-kuma-data:
+    external: true
+    name: uptime-kuma-data

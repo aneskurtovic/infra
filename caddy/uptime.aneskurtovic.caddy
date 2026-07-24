@@ -1,0 +1,41 @@
+# Edge site for Uptime Kuma — dropped into the host's Caddy sites dir
+# (/opt/caddy-sites, imported by the edge Caddy) and reverse-proxied to the
+# uptime-kuma container on the shared `edge` network.
+#
+# Kept behind Caddy basic_auth even though Kuma has its own login: the outer gate
+# protects a fresh DB from public setup-page races and limits exposure of the
+# monitoring UI. The bcrypt hash is NEVER committed — it is provided to the Caddy
+# process via environment (UPTIME_KUMA_USERNAME / UPTIME_KUMA_PASSWORD_HASH),
+# generated on the box with `docker exec <caddy> caddy hash-password`. That is why
+# this file is safe to publish. See uptime-kuma/MIGRATION.md.
+#
+# First issuance needs a brief DNS-only (grey-cloud) window if the record is
+# proxied; renewals work fine while proxied.
+uptime.aneskurtovic.com {
+	log {
+		output file /data/access-uptime-kuma.log {
+			roll_size 25mb
+			roll_keep 3
+			roll_keep_for 168h
+		}
+		format json
+	}
+
+	basic_auth {
+		{$UPTIME_KUMA_USERNAME} {$UPTIME_KUMA_PASSWORD_HASH}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+		-X-Powered-By
+	}
+
+	reverse_proxy uptime-kuma:3001
+	encode gzip zstd
+}

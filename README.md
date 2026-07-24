@@ -1,12 +1,16 @@
 # infra
 
-Self-hosted platform infrastructure for my personal projects — a single small
-box running [Woodpecker CI](https://woodpecker-ci.org/) that builds and deploys
-every repository I own, behind one TLS proxy.
+Self-hosted platform infrastructure for my personal projects — a single small box
+running the shared services every project leans on: [Woodpecker
+CI](https://woodpecker-ci.org/) for build/deploy and [Uptime
+Kuma](https://github.com/louislam/uptime-kuma) for availability monitoring, behind
+one TLS proxy on a shared `edge` network.
 
 GitHub stays the forge (OAuth + webhooks); Woodpecker owns build and deploy. No
 GitHub Actions, no third-party CI. This repo is the source of truth for the
-platform — each application keeps only its own `.woodpecker/` pipelines.
+platform — each application keeps only its own `.woodpecker/` pipelines. Shared,
+cross-project services (CI, monitoring, and in time the edge proxy and host
+bootstrap) live here so no single application owns the platform.
 
 ## Why this exists
 
@@ -66,11 +70,15 @@ flowchart LR
 
 ```
 woodpecker/
-  docker-compose.yml   # server + agent (env-ref only, no values)
+  docker-compose.yml   # CI server + agent (env-ref only, no values)
   .env.example         # documented non-secret config
   BOOTSTRAP.md         # one-time setup runbook
+uptime-kuma/
+  docker-compose.yml   # availability dashboard (edge network, external data volume)
+  MIGRATION.md         # move from Ludo's stack, preserving monitor history
 caddy/
-  ci.aneskurtovic.caddy   # edge site for the CI UI
+  ci.aneskurtovic.caddy       # edge site for the CI UI
+  uptime.aneskurtovic.caddy   # edge site for the monitoring dashboard (basic_auth via env)
 ```
 
 ## Setup
