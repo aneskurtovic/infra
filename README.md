@@ -69,6 +69,9 @@ flowchart LR
 ## Layout
 
 ```
+host/
+  bootstrap.sh         # one-time host setup: Docker, edge network, ufw, SSH, swap, fail2ban
+  README.md            # platform-vs-application boundary; read-only agent user
 woodpecker/
   docker-compose.yml   # CI server + agent (env-ref only, no values)
   .env.example         # documented non-secret config
