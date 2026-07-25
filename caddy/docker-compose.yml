@@ -1,0 +1,79 @@
+# Platform edge proxy — owns :80/:443 and terminates TLS for every site.
+#
+# It joins the shared `edge` network (to reach each app's container by name)
+# plus any application-private network whose containers a tenant snippet
+# reverse-proxies to. Certificates live in the `caddy-data` volume, which is
+# `external: true` because losing it means re-issuing every certificate and
+# burning Let's Encrypt rate limits — it must be created/migrated deliberately.
+#
+#   docker compose --env-file /opt/caddy/caddy.env -f docker-compose.yml up -d
+name: caddy
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: caddy
+    restart: unless-stopped
+    # tini reaps the healthcheck's orphaned `wget`/`ssl_client` children, which
+    # otherwise accumulate as zombies on a long-running proxy.
+    init: true
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3 (QUIC)
+    volumes:
+      - /opt/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Tenant site snippets. Host-owned and OUTSIDE any repo: each application's
+      # deploy writes its own file here, then reloads this container.
+      - /opt/caddy-sites:/etc/caddy/sites:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      # Shared network every tenant container joins.
+      - edge
+      # Application-private networks whose containers tenant snippets proxy to.
+      # Add one line per such app; a snippet can only reach what Caddy can.
+      - ludo-network
+    environment:
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?CADDY_ACME_EMAIL is required}
+    env_file:
+      # Host-only. Holds tenant-supplied values referenced by site snippets
+      # ({$DOMAIN}, {$UPTIME_KUMA_PASSWORD_HASH}, …). Never committed.
+      - /opt/caddy/caddy.env
+    healthcheck:
+      # Validates the *running* config rather than hitting any one tenant's
+      # site, so a single tenant being down never marks the proxy unhealthy.
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.75'
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  edge:
+    external: true
+    name: edge
+  ludo-network:
+    external: true
+    name: ludo-network
+
+volumes:
+  # Certificates + ACME account keys. NEVER let compose auto-create this empty
+  # on a real host — migrate the existing volume (see MIGRATION.md).
+  caddy-data:
+    external: true
+    name: caddy-data
+  caddy-config:
+    name: caddy-config

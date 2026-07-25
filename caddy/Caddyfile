@@ -1,0 +1,27 @@
+# Platform edge proxy — global options only.
+#
+# This file deliberately defines NO sites. Every site on the box, including each
+# application's own, is a snippet in /opt/caddy-sites/*.caddy contributed by its
+# owner. Adding a site is: run a container on the `edge` network + drop a
+# snippet + reload. Nothing about one tenant is edited here.
+{
+	# ACME contact address. Set CADDY_ACME_EMAIL in /opt/caddy/caddy.env.
+	email {$CADDY_ACME_EMAIL}
+
+	# Admin API bound to loopback INSIDE the container: not published, not on any
+	# Docker network, so it is unreachable from other containers or the host
+	# network. It exists so `caddy reload` can swap config gracefully — with the
+	# API off, applying a tenant's site change required restarting the container,
+	# which briefly dropped EVERY site on the box. Zero-downtime reloads matter
+	# more as tenants are added.
+	admin 127.0.0.1:2019
+
+	# Let's Encrypt issues our certs without an OCSP responder URL, so there is
+	# nothing to staple. Disabling silences warn-level lines on every startup
+	# without changing trust posture (modern clients use CRLite/SCTs).
+	ocsp_stapling off
+}
+
+# Every tenant site. A glob matching nothing is a no-op, so this is safe even
+# when the directory is empty.
+import /etc/caddy/sites/*.caddy

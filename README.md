@@ -81,6 +81,10 @@ uptime-kuma/
   MIGRATION.md         # move from Ludo's stack, preserving monitor history
   OPERATIONS.md        # steady-state runbook: monitors, notifications, backup/restore
 caddy/
+  Caddyfile            # edge proxy: global options + import of tenant snippets
+  docker-compose.yml   # the proxy that owns :80/:443 (external cert volume)
+  .env.example         # ACME address + values referenced by tenant snippets
+  MIGRATION.md         # moving the edge proxy off an app onto the platform
   ci.aneskurtovic.caddy       # edge site for the CI UI
   uptime.aneskurtovic.caddy   # edge site for the monitoring dashboard (basic_auth via env)
 ```
