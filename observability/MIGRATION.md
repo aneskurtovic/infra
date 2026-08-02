@@ -75,6 +75,13 @@ keeps serving its admin tab throughout this phase.
 ```bash
 cd /opt/observability
 docker compose --env-file observability.env -f docker-compose.yml config --quiet
+
+# Validate the collector config BEFORE starting anything. `validate` exits
+# non-zero on bad component references as well as syntax errors; `fmt` does not
+# and would let a crash-looping config through.
+docker run --rm -v /opt/observability/alloy:/etc/alloy:ro grafana/alloy:v1.18.0 \
+  validate /etc/alloy/config.alloy
+
 docker compose --env-file observability.env -f docker-compose.yml up -d loki alloy
 docker logs loki    # must NOT crash-loop on `mkdir /loki/chunks`
 docker logs alloy   # must NOT error on the Docker socket
@@ -116,13 +123,28 @@ the box has changed.
 
 ## Phase 2 — Grafana (additive)
 
-```bash
-cp <infra>/caddy/logs.aneskurtovic.caddy /opt/caddy-sites/
-docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+Start Grafana first, so the snippet has something to proxy to:
 
+```bash
 cd /opt/observability
 docker compose --env-file observability.env -f docker-compose.yml up -d grafana
+```
+
+Then add the site. **`GRAFANA_USERNAME` and `GRAFANA_PASSWORD_HASH` must already
+be in `/opt/caddy/caddy.env` (Phase 0).** An unset variable in the snippet's
+`basic_auth` block makes the *whole* Caddyfile invalid, not just this site — and
+the proxy's healthcheck is `caddy validate`, so a bad snippet marks the entire
+edge proxy unhealthy. Validate with the snippet in place but **before** reloading:
+
+```bash
+cp <infra>/caddy/logs.aneskurtovic.caddy /opt/caddy-sites/
+
+docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+# Non-zero exit → `rm /opt/caddy-sites/logs.aneskurtovic.caddy` and fix the env
+# file. Do NOT reload: the currently running config is still good, and reloading
+# a broken one is what turns a typo into an outage for every site.
+
+docker exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```
 
 Browse `https://logs.aneskurtovic.com`. Basic auth challenges, then Grafana's own

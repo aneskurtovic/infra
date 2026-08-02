@@ -21,9 +21,12 @@
 // A tenant querying its own logs MUST scope by stack: {stack="ludo-prod",
 // service="frontend"}. A bare {service="frontend"} now spans prod and stage.
 //
-// Validate changes before deploying (see OPERATIONS.md):
+// Validate changes BEFORE deploying (see OPERATIONS.md). Use `validate`, which
+// exits non-zero on bad component references as well as syntax errors — not
+// `fmt`, which is only a formatter and happily passes a config that will
+// crash-loop the collector:
 //   docker run --rm -v "$PWD/alloy:/etc/alloy:ro" grafana/alloy:v1.18.0 \
-//     fmt /etc/alloy/config.alloy
+//     validate /etc/alloy/config.alloy
 
 discovery.docker "containers" {
 	host = "unix:///var/run/docker.sock"

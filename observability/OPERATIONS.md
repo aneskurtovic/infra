@@ -87,24 +87,30 @@ Onboarding is one rule and a reload — never a new collector.
    runs several containers with a shared prefix, follow the Ludo pattern —
    and mind the `service` rules' ordering comment before adding one there.
 
-2. Validate, deploy, reload:
+2. Validate **before** deploying. `alloy validate` exits non-zero and prints
+   diagnostics for both syntax errors and bad component references — do not use
+   `alloy fmt` for this, it is only a formatter and passes a config that will
+   crash-loop:
 
    ```bash
    docker run --rm -v "$PWD/alloy:/etc/alloy:ro" grafana/alloy:v1.18.0 \
-     fmt /etc/alloy/config.alloy
-   cp alloy/config.alloy /opt/observability/alloy/config.alloy
-   docker restart alloy
+     validate /etc/alloy/config.alloy
+   echo "exit=$?"    # must be 0 — stop here if not
    ```
 
-3. Confirm within ~15s (the discovery refresh interval):
+3. Deploy and reload:
+
+   ```bash
+   cp alloy/config.alloy /opt/observability/alloy/config.alloy
+   docker restart alloy
+   docker logs --tail 20 alloy    # must not be erroring
+   ```
+
+4. Confirm within ~15s (the discovery refresh interval):
 
    ```bash
    curl -s 'http://127.0.0.1:3100/loki/api/v1/label/stack/values'
    ```
-
-Note `alloy fmt` is a **formatter**, not a validator — it catches syntax errors
-but not a wrong component reference. The real check is `docker logs alloy` after
-the restart, which must reach "config loaded" rather than an error.
 
 ## When logs stop arriving
 
