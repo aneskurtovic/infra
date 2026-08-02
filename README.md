@@ -2,9 +2,10 @@
 
 Self-hosted platform infrastructure for my personal projects — a single small box
 running the shared services every project leans on: [Woodpecker
-CI](https://woodpecker-ci.org/) for build/deploy and [Uptime
-Kuma](https://github.com/louislam/uptime-kuma) for availability monitoring, behind
-one TLS proxy on a shared `edge` network.
+CI](https://woodpecker-ci.org/) for build/deploy, [Uptime
+Kuma](https://github.com/louislam/uptime-kuma) for availability monitoring, and
+[Loki](https://grafana.com/oss/loki/) + [Grafana](https://grafana.com/) for
+centralized logs — behind one TLS proxy on a shared `edge` network.
 
 GitHub stays the forge (OAuth + webhooks); Woodpecker owns build and deploy. No
 GitHub Actions, no third-party CI. This repo is the source of truth for the
@@ -30,6 +31,8 @@ flowchart LR
     subgraph Box[One host]
       subgraph edge[edge network]
         CADDY[Caddy · TLS :80/:443]
+        GRAF[Grafana]
+        LOKI[(Loki · 7d)]
       end
       subgraph ci[ci-network]
         WS[woodpecker-server]
@@ -37,11 +40,15 @@ flowchart LR
       end
       WS --- edge
       APPS[deployed apps]
+      ALLOY[Alloy · ro docker.sock]
     end
     R1 & R2 -- webhook --> WS
     CADDY -- proxies UI --> WS
+    CADDY -- proxies UI --> GRAF
     WS -- schedules --> WA
     WA -- rsync + atomic symlink over SSH --> APPS
+    ALLOY -- scrapes every container --> LOKI
+    GRAF -- queries --> LOKI
 ```
 
 - **`woodpecker-server`** — OAuth, webhooks, scheduling, UI. Reachable only
@@ -51,6 +58,10 @@ flowchart LR
   services on the same box. Scale by adding an agent host, not concurrency.
 - **Caddy** — owns `:80/:443`, auto-issues Let's Encrypt, fronts the CI UI and
   every app on the shared `edge` network.
+- **Loki + Alloy + Grafana** — one collector reads every container's stdout over
+  a read-only Docker socket and labels it by `stack`, so each application's logs
+  are queryable without SSH. Loki has no auth and is loopback-only; Grafana is
+  the sole public path, behind Basic auth.
 
 ## Design principles
 
@@ -80,6 +91,14 @@ uptime-kuma/
   docker-compose.yml   # availability dashboard (edge network, external data volume)
   MIGRATION.md         # move from Ludo's stack, preserving monitor history
   OPERATIONS.md        # steady-state runbook: monitors, notifications, backup/restore
+observability/
+  docker-compose.yml   # Loki + Alloy + Grafana (external data volumes)
+  loki/loki-config.yml # storage, 7-day retention, ingestion limits
+  alloy/config.alloy   # docker discovery + the stack/service label scheme
+  grafana/provisioning # Loki datasource, committed rather than click-configured
+  .env.example         # Grafana root URL + bootstrap admin
+  MIGRATION.md         # move off Ludo's two Loki/Promtail pairs
+  OPERATIONS.md        # steady-state runbook: queries, onboarding a tenant, backup
 caddy/
   Caddyfile            # edge proxy: global options + import of tenant snippets
   docker-compose.yml   # the proxy that owns :80/:443 (external cert volume)
@@ -87,6 +106,7 @@ caddy/
   MIGRATION.md         # moving the edge proxy off an app onto the platform
   ci.aneskurtovic.caddy       # edge site for the CI UI
   uptime.aneskurtovic.caddy   # edge site for the monitoring dashboard (basic_auth via env)
+  logs.aneskurtovic.caddy     # edge site for Grafana (basic_auth via env)
 ```
 
 ## Setup

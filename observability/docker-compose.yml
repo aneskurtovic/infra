@@ -1,0 +1,223 @@
+# Platform observability — centralized logs for every container on the box.
+#
+# Neutral, platform-owned (moved off Ludo's compose, which ran two Loki
+# instances and two Promtail collectors of its own). Three services:
+#
+#   loki    — log storage, queried by Grafana and by tenants' own admin UIs
+#   alloy   — the single collector; discovers ALL containers over a read-only
+#             Docker socket and labels each stream with `stack` + `service`
+#   grafana — the query UI, reached only through the edge proxy
+#
+# Isolation between tenants is by LABEL (`stack="ludo-prod"`, `stack="helifilm"`,
+# …), not by separate instances. That is a deliberate trade: it is what lets one
+# small collector serve the whole box, and it means any client that can reach
+# Loki can query every stack's logs. Loki is therefore internal-only — no Caddy
+# route, no public port — and the only public surface is Grafana behind
+# basic_auth (caddy/logs.aneskurtovic.caddy).
+#
+# Both data volumes are `external: true` on purpose: `compose up` must never
+# silently create them empty. See MIGRATION.md (from Ludo) or, for a fresh box:
+#   docker volume create loki-data
+#   docker volume create grafana-data
+#
+# Bring up with:
+#   docker compose --env-file /opt/observability/observability.env -f docker-compose.yml up -d
+name: observability
+
+services:
+  # ---------------------------------------------------------------------------
+  # Log storage
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.6.13
+    container_name: loki
+    restart: unless-stopped
+    # grafana/loki:3.x runs as uid 10001, but a fresh named volume mounts at
+    # /loki owned by root — Loki then can't `mkdir /loki/chunks` (nor its rules/
+    # compactor dirs) and crash-loops with exit 1 "permission denied". Run as
+    # root so it can bootstrap its filesystem store; Loki is internal-only (no
+    # Caddy route, loopback-only host port) and keeps no-new-privileges, so the
+    # blast radius is negligible. Inherited verbatim from Ludo's stack, where
+    # this cost an afternoon to diagnose the first time.
+    user: "0"
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    networks:
+      - edge
+      # MIGRATION TOUCH POINT (1 of 2) — comment out until cutover.
+      #
+      # Ludo's own Loki already answers to the name `loki` on this network.
+      # Attaching a second container with the same name makes Docker's embedded
+      # DNS return BOTH records, and Ludo's backend HttpClient (BaseAddress
+      # http://loki:3100) would hit them non-deterministically. Ludo's collectors
+      # must be stopped and removed first. See MIGRATION.md Phase 3.
+      - ludo-network
+    expose:
+      - "3100"
+    ports:
+      # MIGRATION TOUCH POINT (2 of 2) — comment out until cutover.
+      #
+      # Loopback-only host binding so the genuinely read-only `claude_ro` host
+      # user (no docker group, no sudo) can query logs without docker. Ludo's
+      # Loki holds this exact port until it is stopped, so the two cannot
+      # coexist. 127.0.0.1 = never reachable off-box; Loki has no auth, so it
+      # must stay loopback.
+      - "127.0.0.1:3100:3100"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          # Serves every stack on the box now, not one — up from the 256M this
+          # ran on as Ludo's single-stack instance.
+          memory: 512M
+          cpus: '0.75'
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # The collector
+  # ---------------------------------------------------------------------------
+  #
+  # Replaces Promtail, which reached end-of-life on 2 March 2026. Alloy is
+  # Grafana's supported successor; `alloy convert --source-format=promtail`
+  # migrates an old config mechanically.
+  #
+  # One collector for the whole box, where Ludo ran two. Ludo's pair each needed
+  # an `action: keep` filter so neither shipped the other's containers; a
+  # platform collector wants everything, so there is no keep filter here — see
+  # alloy/config.alloy.
+  alloy:
+    image: grafana/alloy:v1.18.0
+    container_name: alloy
+    restart: unless-stopped
+    # Runs as root (the image default). Non-root support in the Alloy image is
+    # undocumented and effectively experimental, and reading the Docker socket
+    # needs either root or membership of the host's docker group — which is
+    # root-equivalent anyway, so it buys nothing here. Do not "fix" this with a
+    # `user:` override without testing that discovery.docker still works.
+    #
+    # The socket is mounted READ-ONLY into this single-purpose container and
+    # nowhere else. Rationale inherited from Ludo's stack: socket access is
+    # root-equivalent, so it belongs on a minimal collector and never on an
+    # internet-facing app server handling arbitrary user input. This is the
+    # standard pattern (Promtail/Alloy/Filebeat/Fluentd all work this way). The
+    # alternative — the Loki Docker logging-driver plugin — needs a
+    # `docker plugin install` host provisioning step, which this platform avoids.
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    networks:
+      - edge
+    depends_on:
+      loki:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # The UI
+  # ---------------------------------------------------------------------------
+  #
+  # New — there was no Grafana before this. Ludo read Loki through its own admin
+  # panel, and every other tenant's logs were unreadable without SSH. No host
+  # port: reached only through the edge proxy, which gates it with basic_auth
+  # (caddy/logs.aneskurtovic.caddy) on top of Grafana's own login.
+  grafana:
+    image: grafana/grafana:13.1.1
+    container_name: grafana
+    restart: unless-stopped
+    volumes:
+      - grafana-data:/var/lib/grafana
+      # Datasource provisioned from the repo so a fresh install is useful
+      # immediately — no click-ops, and the config is reviewable in git.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - edge
+    expose:
+      - "3000"
+    environment:
+      # Must match the hostname in the Caddy snippet or OAuth-style redirects
+      # and generated links point at the container instead.
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:?GRAFANA_ROOT_URL is required}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is required}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      # This is a single-operator dashboard behind a second auth gate. Nobody
+      # signs themselves up, and nothing is readable without logging in.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Nothing here should phone home from a personal box.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: '0.5'
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  # Shared network every tenant container joins; how Alloy and Grafana reach
+  # Loki, and how Caddy reaches Grafana.
+  edge:
+    external: true
+    name: edge
+  # Ludo's application-private network. Loki joins it so Ludo's backend can keep
+  # querying `http://loki:3100` unchanged. See the MIGRATION TOUCH POINT above —
+  # this must not be attached while Ludo's own Loki is still running.
+  ludo-network:
+    external: true
+    name: ludo-network
+
+volumes:
+  # Log chunks + index. NEVER let compose auto-create this on a real host.
+  loki-data:
+    external: true
+    name: loki-data
+  # Dashboards, users, API keys. Same reasoning.
+  grafana-data:
+    external: true
+    name: grafana-data
+  # Read positions only — rebuildable, so an ordinary managed volume. Losing it
+  # re-reads recent container logs and duplicates a few lines; harmless.
+  alloy-data:
+    name: alloy-data

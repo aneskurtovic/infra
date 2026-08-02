@@ -1,0 +1,46 @@
+# Edge site for Grafana — dropped into the host's Caddy sites dir
+# (/opt/caddy-sites, imported by the edge Caddy) and reverse-proxied to the
+# grafana container on the shared `edge` network.
+#
+# Kept behind Caddy basic_auth even though Grafana has its own login, for the
+# same reason as the monitoring dashboard: the outer gate limits exposure of a
+# UI that can read EVERY tenant's logs, and protects a freshly provisioned
+# instance from public probing before the admin password is rotated. The bcrypt
+# hash is NEVER committed — it reaches Caddy via environment
+# (GRAFANA_USERNAME / GRAFANA_PASSWORD_HASH), generated on the box with
+# `docker exec caddy caddy hash-password`. That is why this file is safe to
+# publish. See observability/MIGRATION.md.
+#
+# Loki itself is deliberately NOT routed here. It has no authentication and its
+# only host binding is 127.0.0.1 — Grafana is the sole public path to logs.
+#
+# First issuance needs a brief DNS-only (grey-cloud) window if the record is
+# proxied; renewals work fine while proxied.
+logs.aneskurtovic.com {
+	log {
+		output file /data/access-grafana.log {
+			roll_size 25mb
+			roll_keep 3
+			roll_keep_for 168h
+		}
+		format json
+	}
+
+	basic_auth {
+		{$GRAFANA_USERNAME} {$GRAFANA_PASSWORD_HASH}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+		-X-Powered-By
+	}
+
+	reverse_proxy grafana:3000
+	encode gzip zstd
+}

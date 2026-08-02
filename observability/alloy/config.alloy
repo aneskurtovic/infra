@@ -1,0 +1,144 @@
+// Grafana Alloy — the platform's single log collector.
+//
+// Replaces the two Promtail instances Ludo used to run (Promtail reached
+// end-of-life on 2 March 2026). Discovers every container on the box over a
+// read-only Docker socket and ships its stdout/stderr to the platform Loki,
+// labelled with `stack` and `service`.
+//
+// THE LABEL SCHEME IS THE WHOLE POINT OF THIS FILE.
+//
+// Ludo's two Promtails each shipped only their own containers (`action: keep`)
+// to their own Loki, so prod's `ludo-frontend` and stage's `ludo-frontend-stage`
+// could both be labelled `service="frontend"` without colliding — the isolation
+// was the deployment topology, not the labels. One platform Loki removes that
+// separation, so `stack` has to carry it instead:
+//
+//   ludo-frontend        -> stack="ludo-prod",  service="frontend"
+//   ludo-frontend-stage  -> stack="ludo-stage", service="frontend"
+//   helifilm             -> stack="helifilm",   service="helifilm"
+//   caddy                -> stack="platform",   service="caddy"
+//
+// A tenant querying its own logs MUST scope by stack: {stack="ludo-prod",
+// service="frontend"}. A bare {service="frontend"} now spans prod and stage.
+//
+// Validate changes before deploying (see OPERATIONS.md):
+//   docker run --rm -v "$PWD/alloy:/etc/alloy:ro" grafana/alloy:v1.18.0 \
+//     fmt /etc/alloy/config.alloy
+
+discovery.docker "containers" {
+	host = "unix:///var/run/docker.sock"
+	// Matches the interval Ludo's Promtail used; new containers start being
+	// collected within ~15s of coming up.
+	refresh_interval = "15s"
+}
+
+discovery.relabel "containers" {
+	targets = discovery.docker.containers.targets
+
+	// --- stack -------------------------------------------------------------
+	//
+	// These four rules are mutually exclusive BY CONSTRUCTION, so their order
+	// does not matter: `[a-z]+` excludes hyphens, which is what stops
+	// `^/ludo-[a-z]+$` from also matching `/ludo-frontend-stage`. Prefer this
+	// over relying on rule ordering — it survives someone inserting a rule.
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "^/ludo-[a-z]+$"
+		target_label  = "stack"
+		replacement   = "ludo-prod"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "^/ludo-[a-z]+-stage$"
+		target_label  = "stack"
+		replacement   = "ludo-stage"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "^/portfolio$"
+		target_label  = "stack"
+		replacement   = "portfolio"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "^/helifilm$"
+		target_label  = "stack"
+		replacement   = "helifilm"
+	}
+
+	// The platform's own services, including this collector and its Loki.
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "^/(caddy|uptime-kuma|woodpecker-server|woodpecker-agent|loki|alloy|grafana)$"
+		target_label  = "stack"
+		replacement   = "platform"
+	}
+
+	// --- service -----------------------------------------------------------
+	//
+	// ORDER IS LOAD-BEARING HERE, unlike the stack rules above. Relabel rules
+	// apply top to bottom and a later match OVERWRITES an earlier one, so the
+	// generic rule goes FIRST and the specific one refines it. Swapping these
+	// two silently relabels every Ludo container `service="ludo-frontend"`
+	// instead of `service="frontend"`, and Ludo's admin Logs tab returns
+	// nothing at all. Specificity increases downward.
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "^/(.*)$"
+		target_label  = "service"
+		replacement   = "$1"
+	}
+
+	// Strip the `ludo-` prefix and any `-stage` suffix, so prod and stage share
+	// a service name and are told apart by `stack` alone.
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "^/ludo-([a-z]+)(?:-stage)?$"
+		target_label  = "service"
+		replacement   = "$1"
+	}
+
+	// --- always-on labels --------------------------------------------------
+
+	// The real container name, unmangled — the tiebreaker when `service` is
+	// ambiguous and what you grep for when a `stack` rule is missing.
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "^/(.*)$"
+		target_label  = "container"
+		replacement   = "$1"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_log_stream"]
+		target_label  = "stream"
+	}
+}
+
+// NO `action: keep` FILTER, deliberately.
+//
+// Ludo's Promtails needed one because the host-wide socket sees every container
+// and each collector had to ship only its own. A platform collector wants the
+// whole box. The consequence: a container matching no `stack` rule above still
+// ships, labelled only by `container` and `service`. That is a visible gap you
+// can find with `sum by (container) (count_over_time({stack=""}[1h]))` rather
+// than silently dropped logs. Onboarding a tenant is one `stack` rule and a
+// reload, never a new collector.
+loki.source.docker "containers" {
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.containers.output
+	forward_to = [loki.write.platform.receiver]
+}
+
+loki.write "platform" {
+	endpoint {
+		// Container name on the shared `edge` network. Loki has no auth, so
+		// this stays internal — never route it through Caddy.
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}

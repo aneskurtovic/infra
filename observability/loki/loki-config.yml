@@ -1,0 +1,77 @@
+# Loki single-binary config for the platform instance.
+#
+# Adapted from Ludo's docker/loki/loki-config.yml, which was sized for ONE
+# application stack. This instance serves every container on the box — both Ludo
+# stacks, the two static sites, the edge proxy, CI, and the monitoring dashboard
+# — so the ingestion limits below are deliberately different from the original.
+#
+# Filesystem storage only: no S3/GCS, no index gateway, no separate compactor
+# process. One box, one binary.
+
+# No authentication. Isolation between tenants is by LABEL (`stack="…"`), not by
+# Loki tenancy, which means ANY CLIENT THAT CAN REACH THIS CAN QUERY EVERY
+# STACK'S LOGS. That is an accepted trade for a single-operator box, and it is
+# why Loki is internal-only: no Caddy route, and its only host binding is
+# 127.0.0.1. If a tenant ever needs to be genuinely unable to read another's
+# logs, this becomes `true` plus per-stack X-Scope-OrgID headers — a real
+# migration, not a flag flip.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        # Retention requires the index period to be 24h — see the compactor
+        # block below. Do not "tidy" this to something else.
+        period: 24h
+
+limits_config:
+  # One retention policy for the whole box. Seven days is plenty for "what
+  # happened to this service recently" triage, which is what this exists for.
+  #
+  # Note the coupling introduced by consolidation: this same window now covers
+  # Woodpecker's build logs, which are far noisier than an idle static site. If
+  # disk becomes the constraint, CI is the first thing to look at — see
+  # OPERATIONS.md for the per-stack volume query.
+  retention_period: 168h
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+  # Raised from Ludo's 8/16. Those were sized for one stack's five containers;
+  # this instance ingests roughly ten containers across five stacks, and a
+  # Woodpecker build can burst hard for a minute at a time. Under-sizing here
+  # shows up as dropped lines during exactly the incident you are debugging.
+  ingestion_rate_mb: 24
+  ingestion_burst_size_mb: 48
+
+  # Guard rails for the Grafana Explore UI — a careless unscoped query on a
+  # multi-tenant instance is much easier to write than it was on a single-app
+  # one.
+  max_query_series: 500
+  max_entries_limit_per_query: 5000
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+  retention_delete_delay: 2h

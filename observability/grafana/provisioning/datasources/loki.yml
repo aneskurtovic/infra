@@ -1,0 +1,23 @@
+# Provisioned Loki datasource — committed so a fresh Grafana is useful on first
+# boot with no click-ops, and so the config is reviewable in git rather than
+# living only inside the grafana-data volume.
+#
+# `editable: false` makes this file the source of truth: the UI shows the
+# datasource read-only, so nobody edits it in Grafana and then loses the change
+# on the next container recreate. Change it here and restart Grafana.
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    uid: platform-loki
+    access: proxy
+    # Container name on the shared `edge` network. Loki has no auth, so there
+    # are no credentials to supply here.
+    url: http://loki:3100
+    isDefault: true
+    editable: false
+    jsonData:
+      # Matches limits_config.max_entries_limit_per_query in loki/loki-config.yml.
+      # Asking for more than Loki will return just produces a confusing error.
+      maxLines: 5000
