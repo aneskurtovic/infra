@@ -34,7 +34,9 @@ Four constraints force the sequence:
 
 Because of (1) and (2), `observability/docker-compose.yml` ships in its
 **steady-state** form and carries two blocks marked `MIGRATION TOUCH POINT`.
-Phase 1 comments them out; Phase 3 restores them.
+Phase 1 runs against a generated `docker-compose.phase1.yml` with those two
+blocks commented out; Phase 3 goes back to the real file and deletes the
+generated one.
 
 ---
 
@@ -67,14 +69,23 @@ Cloudflare, grey-cloud it for first issuance.
 
 ## Phase 1 — collector up, verify the labels (additive, Ludo untouched)
 
-Comment out **both** `MIGRATION TOUCH POINT` blocks in
-`/opt/observability/docker-compose.yml` — the `ludo-network` entry under
-`loki.networks` and the whole `loki.ports` block. Ludo's Loki keeps running and
-keeps serving its admin tab throughout this phase.
+Generate a Phase-1 variant of the compose file with both `MIGRATION TOUCH POINT`
+blocks commented out — the `ludo-network` entry under `loki.networks` and the
+`loki.ports` block. Generating a second file rather than editing the real one
+means there is nothing to remember to revert: Phase 3 simply uses the original.
+Ludo's Loki keeps running and keeps serving its admin tab throughout this phase.
 
 ```bash
 cd /opt/observability
-docker compose --env-file observability.env -f docker-compose.yml config --quiet
+sed -e 's/^      - ludo-network$/#&/' \
+    -e 's/^    ports:$/#&/' \
+    -e 's/^      - "127\.0\.0\.1:3100:3100"$/#&/' \
+    docker-compose.yml > docker-compose.phase1.yml
+
+# Confirm the transform did what it should: `edge` only, no host port.
+docker compose --env-file observability.env -f docker-compose.phase1.yml config \
+  | grep -A6 -E '^  loki:'
+docker compose --env-file observability.env -f docker-compose.phase1.yml config --quiet
 
 # Validate the collector config BEFORE starting anything. `validate` exits
 # non-zero on bad component references as well as syntax errors; `fmt` does not
@@ -82,7 +93,7 @@ docker compose --env-file observability.env -f docker-compose.yml config --quiet
 docker run --rm -v /opt/observability/alloy:/etc/alloy:ro grafana/alloy:v1.18.0 \
   validate /etc/alloy/config.alloy
 
-docker compose --env-file observability.env -f docker-compose.yml up -d loki alloy
+docker compose --env-file observability.env -f docker-compose.phase1.yml up -d loki alloy
 docker logs loki    # must NOT crash-loop on `mkdir /loki/chunks`
 docker logs alloy   # must NOT error on the Docker socket
 ```
@@ -118,8 +129,8 @@ lq 'http://loki:3100/loki/api/v1/query_range' \
    --data-urlencode 'query={container=~".+", stack=""}'
 ```
 
-**Rollback:** `docker compose down` and delete the two volumes. Nothing else on
-the box has changed.
+**Rollback:** `docker compose -f docker-compose.phase1.yml down` and delete the
+two volumes. Nothing else on the box has changed.
 
 ## Phase 2 — Grafana (additive)
 
@@ -127,7 +138,8 @@ Start Grafana first, so the snippet has something to proxy to:
 
 ```bash
 cd /opt/observability
-docker compose --env-file observability.env -f docker-compose.yml up -d grafana
+# Still the phase1 file — Loki must not pick up ludo-network until Phase 3.
+docker compose --env-file observability.env -f docker-compose.phase1.yml up -d grafana
 ```
 
 Then add the site. **`GRAFANA_USERNAME` and `GRAFANA_PASSWORD_HASH` must already
@@ -173,12 +185,13 @@ docker run --rm --network ludo-network curlimages/curl:latest \
   -s --max-time 5 http://loki:3100/ready ; echo "exit=$?"
 ```
 
-Now restore **both** `MIGRATION TOUCH POINT` blocks in
-`/opt/observability/docker-compose.yml` and recreate Loki:
+Now switch back to the real compose file — the one that has both `MIGRATION
+TOUCH POINT` blocks live — and recreate Loki:
 
 ```bash
 cd /opt/observability
 docker compose --env-file observability.env -f docker-compose.yml up -d
+rm -f docker-compose.phase1.yml    # nothing should use it again
 ```
 
 Verify the name resolves to exactly one instance, from inside Ludo's backend:
