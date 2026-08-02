@@ -69,12 +69,15 @@ services:
       # coexist. 127.0.0.1 = never reachable off-box; Loki has no auth, so it
       # must stay loopback.
       - "127.0.0.1:3100:3100"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3100/ready"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+    # NO healthcheck, deliberately. The grafana/loki image ships the Loki binary
+    # and almost nothing else — there is no wget, no curl, no HTTP client of any
+    # kind, so a `test:` here fails with "executable file not found in $PATH"
+    # forever and the container never leaves `health: starting`. Anything using
+    # `condition: service_healthy` against it then blocks indefinitely.
+    # (Ludo's Loki had no healthcheck for the same reason.)
+    #
+    # Check readiness from OUTSIDE instead:
+    #   curl -s http://127.0.0.1:3100/ready
     security_opt:
       - no-new-privileges:true
     deploy:
@@ -131,8 +134,11 @@ services:
     networks:
       - edge
     depends_on:
-      loki:
-        condition: service_healthy
+      # Plain start-order only, NOT `condition: service_healthy` — Loki cannot
+      # have a healthcheck (see its comment above), so a health condition here
+      # blocks `compose up` forever. It is also unnecessary: Alloy buffers and
+      # retries pushes, so starting before Loki is ready costs nothing.
+      - loki
     security_opt:
       - no-new-privileges:true
     deploy:
