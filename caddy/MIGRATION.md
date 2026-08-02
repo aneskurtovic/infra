@@ -8,6 +8,25 @@ tenant snippet in `/opt/caddy-sites`.
 for every site on the box; a mistake takes them all down at once. Read the whole
 runbook before starting, and do it in a maintenance window.
 
+## Confirm the box before you read further
+
+This directory has existed, committed and unexecuted, for some time. **A file in
+this repo describes intent, not deployment.** Establish which world you are in
+first — the answer changes every command below:
+
+```bash
+docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '443|caddy'
+ls -la /opt/caddy 2>&1
+```
+
+- `ludo-caddy` holds `:80/:443` and `/opt/caddy` does not exist → **not migrated**;
+  this runbook applies in full.
+- `caddy` holds `:80/:443` and `/opt/caddy` exists → already migrated; you want
+  Phase 4/5 or nothing at all.
+
+Checking the repo instead of the box has already produced two wrong changes in
+this platform's history. Spend the ten seconds.
+
 ## Why the ordering below is what it is
 
 Three constraints force the sequence:
@@ -47,16 +66,50 @@ echo 'CADDY_ACME_EMAIL=admin@ludo-nexus.com' >> /opt/caddy/caddy.env
 chmod 600 /opt/caddy/caddy.env
 ```
 
-**Extract the application's site blocks into a tenant snippet.** Take its
-`docker/caddy/Caddyfile`, drop the global `{...}` options block and the
-`import` line, and keep the site blocks (prod, the `www` redirect, stage):
+### Extract the application's site blocks into a tenant snippet
+
+**This is the step that takes the box down if it is wrong, and it is the one
+step the platform cannot do for you.** The platform `Caddyfile` defines *zero*
+sites — it only imports `/opt/caddy-sites/*.caddy`. Every hostname the old proxy
+served from its own baked-in Caddyfile must exist as a snippet **before**
+cutover, or that hostname simply stops resolving to anything the moment the new
+proxy starts.
+
+Check which hostnames are currently served from inside the container rather than
+from `/opt/caddy-sites` — those are the ones with no snippet yet:
 
 ```bash
-# Write /opt/caddy-sites/ludo.caddy with those site blocks, then confirm the
-# snippet set now covers every hostname that must stay up:
+ls -1 /opt/caddy-sites/                       # what already has a snippet
+docker exec ludo-caddy caddy adapt --config /etc/caddy/Caddyfile --pretty \
+  | grep -oE '"[a-z0-9.-]+\.[a-z]{2,}"' | sort -u   # what is actually served
+```
+
+For Ludo the gap is four site blocks in `docker/caddy/Caddyfile`: `{$DOMAIN}`,
+`www.{$DOMAIN}`, `http://www.{$DOMAIN}`, and `{$STAGE_DOMAIN}`. The snippet is
+those four blocks verbatim, minus the global `{...}` options block and the
+`import` line (the platform Caddyfile supplies both).
+
+Three things that must hold, and are easy to miss:
+
+1. **`{$DOMAIN}` / `{$STAGE_DOMAIN}` must be in `/opt/caddy/caddy.env`** — the
+   snippet stays templated rather than hardcoding hostnames, so the variables
+   have to resolve for the *platform* proxy, not the application's.
+2. **`reverse_proxy backend:8080` keeps working**, but only because the platform
+   proxy joins `ludo-network`. Those are Compose *service aliases*, registered
+   per-network, so any container on that network resolves them regardless of
+   project. Drop `ludo-network` from the proxy's compose and every Ludo route
+   502s.
+3. **The snippet belongs in the application's repo**, not this one —
+   `Ludo.On.Steroids/deploy/ludo.caddy`, the same way Helifilm keeps
+   `deploy/helifilm.aneskurtovic.caddy`. Tenants own their own routing; that is
+   the whole point of the split. Phase 4 then teaches the app's deploy to write
+   it.
+
+```bash
+cp <app>/deploy/ludo.caddy /opt/caddy-sites/ludo.caddy
 ls -1 /opt/caddy-sites/
 # expect: aneskurtovic.caddy  ci.aneskurtovic.caddy  helifilm.aneskurtovic.caddy
-#         uptime.aneskurtovic.caddy  ludo.caddy
+#         ludo.caddy  uptime.aneskurtovic.caddy
 ```
 
 Validate the whole future config **before** touching anything, using a throwaway
@@ -99,6 +152,9 @@ docker ps --filter name=^caddy$ --format '{{.Names}} {{.Status}}'
 
 ## Phase 3 — verify every site (not just one)
 
+Derive the list from `/opt/caddy-sites/` rather than trusting the one below —
+a hostname added since this was written and missed here is a site nobody checks.
+
 ```bash
 for u in https://ludo-nexus.com/health \
          https://stage.ludo-nexus.com/health \
@@ -114,6 +170,39 @@ Expected: `200` everywhere except the uptime dashboard, which returns `401`
 certificates are the **migrated** ones (no fresh-issuance delay).
 
 **If anything is wrong, roll back now** (see below) rather than pressing on.
+
+## Phase 3b — publish Grafana (unblocked by this migration)
+
+`caddy/logs.aneskurtovic.caddy` has been committed and unusable since the
+logging migration: it needs `GRAFANA_USERNAME` / `GRAFANA_PASSWORD_HASH`, and
+the application's proxy had no `env_file` to read them from. The platform proxy
+does. Until now Grafana has been reachable only over an SSH tunnel to
+`127.0.0.1:3000`.
+
+```bash
+docker exec caddy caddy hash-password        # store the HASH, never the password
+cat >> /opt/caddy/caddy.env <<'EOF'
+GRAFANA_USERNAME=operator
+GRAFANA_PASSWORD_HASH='PASTE_THE_HASH_HERE'
+EOF
+
+cp <infra>/caddy/logs.aneskurtovic.caddy /opt/caddy-sites/
+docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+# Non-zero → rm the snippet and fix caddy.env. Do NOT reload a config that does
+# not validate: the healthcheck is `caddy validate`, so a bad snippet marks the
+# whole proxy unhealthy and takes every site's next reload with it.
+docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+Point `logs.aneskurtovic.com` at the box first (grey-cloud for first issuance).
+Then update `GRAFANA_ROOT_URL` in `/opt/observability/observability.env` from
+`http://localhost:3000/` to `https://logs.aneskurtovic.com/` and
+`docker compose ... up -d grafana`, or Grafana will keep generating links
+pointing at localhost.
+
+Keep the loopback port. When the edge proxy is broken is exactly when you need
+logs, and routing the log UI solely through the thing you are debugging is a bad
+dependency.
 
 ## Phase 4 — remove the proxy from the application (repo change)
 

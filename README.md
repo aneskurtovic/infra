@@ -76,6 +76,11 @@ flowchart LR
   and flip an atomic `current` symlink, keeping the last few for instant rollback.
 - **Pinned everything.** Server and agent images are version-pinned and upgraded
   together.
+- **Committed is not deployed.** This repo describes the platform's *intended*
+  shape; the box describes its actual one, and they drift. A migration runbook
+  can sit here fully written for weeks before anyone runs it. Every `MIGRATION.md`
+  therefore opens by having you check the box, and any change made on the strength
+  of "the repo says X" is a guess until `docker ps` agrees.
 
 ## Layout
 

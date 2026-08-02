@@ -19,9 +19,23 @@ triage across the whole box, not for deep single-application forensics.
 
 Retention is **7 days**, enforced by Loki's compactor. There is no archive.
 
-## The two authentication gates
+## Reaching Grafana
 
-Grafana sits behind Caddy `basic_auth` (`GRAFANA_USERNAME` /
+**Today it is loopback-only, over an SSH tunnel:**
+
+```bash
+ssh -L 3000:127.0.0.1:3000 root@<box>     # then browse http://localhost:3000
+```
+
+`caddy/logs.aneskurtovic.caddy` is committed but **not active** — it needs the
+platform Caddy, which has not been deployed (the box still runs the
+application's own `ludo-caddy`, and `/opt/caddy` does not exist). It goes live as
+Phase 3b of `caddy/MIGRATION.md`. The loopback port stays afterwards: when the
+edge proxy is broken is exactly when you need logs.
+
+## The two authentication gates (once published)
+
+Grafana will sit behind Caddy `basic_auth` (`GRAFANA_USERNAME` /
 `GRAFANA_PASSWORD_HASH` in `/opt/caddy/caddy.env`) *and* its own login
 (`/opt/observability/observability.env`). Two different files, two different
 credentials — a common source of confusion when rotating.
