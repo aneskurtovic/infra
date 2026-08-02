@@ -56,8 +56,12 @@ services:
       - ludo-network
     expose:
       - "3100"
-    ports:
+    ports:  # MIGRATION-TOUCHPOINT-PORTS
       # MIGRATION TOUCH POINT (2 of 2) — comment out until cutover.
+      #
+      # The marker on the `ports:` line above is what MIGRATION.md's Phase 1 sed
+      # matches on. Grafana also publishes a loopback port, so a bare `ports:`
+      # is NOT unique in this file — do not remove the marker.
       #
       # Loopback-only host binding so the genuinely read-only `claude_ro` host
       # user (no docker group, no sudo) can query logs without docker. Ludo's
@@ -163,6 +167,16 @@ services:
       - edge
     expose:
       - "3000"
+    ports:
+      # Loopback-only, and NOT a stopgap: when the edge proxy is broken is
+      # exactly when you need to read logs, and routing the log UI through the
+      # thing you are debugging is a bad dependency. Mirrors the loopback
+      # pattern already used by loki and postgres on this box.
+      #
+      # It is also the only access path until the edge proxy migration runs —
+      # caddy/logs.aneskurtovic.caddy is committed but cannot work until then.
+      # Reach it with:  ssh -L 3000:127.0.0.1:3000 root@<box>
+      - "127.0.0.1:3000:3000"
     environment:
       # Must match the hostname in the Caddy snippet or OAuth-style redirects
       # and generated links point at the container instead.

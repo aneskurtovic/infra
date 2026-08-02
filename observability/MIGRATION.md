@@ -78,7 +78,7 @@ Ludo's Loki keeps running and keeps serving its admin tab throughout this phase.
 ```bash
 cd /opt/observability
 sed -e 's/^      - ludo-network$/#&/' \
-    -e 's/^    ports:$/#&/' \
+    -e 's/^    ports:  # MIGRATION-TOUCHPOINT-PORTS$/#&/' \
     -e 's/^      - "127\.0\.0\.1:3100:3100"$/#&/' \
     docker-compose.yml > docker-compose.phase1.yml
 
@@ -132,9 +132,7 @@ lq 'http://loki:3100/loki/api/v1/query_range' \
 **Rollback:** `docker compose -f docker-compose.phase1.yml down` and delete the
 two volumes. Nothing else on the box has changed.
 
-## Phase 2 — Grafana (additive)
-
-Start Grafana first, so the snippet has something to proxy to:
+## Phase 2 — Grafana over an SSH tunnel (additive)
 
 ```bash
 cd /opt/observability
@@ -142,33 +140,30 @@ cd /opt/observability
 docker compose --env-file observability.env -f docker-compose.phase1.yml up -d grafana
 ```
 
-Then add the site. **`GRAFANA_USERNAME` and `GRAFANA_PASSWORD_HASH` must already
-be in `/opt/caddy/caddy.env` (Phase 0).** An unset variable in the snippet's
-`basic_auth` block makes the *whole* Caddyfile invalid, not just this site — and
-the proxy's healthcheck is `caddy validate`, so a bad snippet marks the entire
-edge proxy unhealthy. Validate with the snippet in place but **before** reloading:
+Grafana publishes `127.0.0.1:3000` only, so reach it from your workstation:
 
 ```bash
-cp <infra>/caddy/logs.aneskurtovic.caddy /opt/caddy-sites/
-
-docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-# Non-zero exit → `rm /opt/caddy-sites/logs.aneskurtovic.caddy` and fix the env
-# file. Do NOT reload: the currently running config is still good, and reloading
-# a broken one is what turns a typo into an outage for every site.
-
-docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+ssh -L 3000:127.0.0.1:3000 root@<box>     # then browse http://localhost:3000
 ```
 
-Browse `https://logs.aneskurtovic.com`. Basic auth challenges, then Grafana's own
-login. The **Loki** datasource is already provisioned — Explore →
-`{stack="platform"}` should return the edge proxy's and CI's logs, which have
+Log in, then **rotate the admin password immediately** — `GRAFANA_ADMIN_PASSWORD`
+applies on first start only. The **Loki** datasource is already provisioned:
+Explore → `{stack="platform"}` returns the edge proxy's and CI's logs, which have
 never been queryable before.
 
-Rotate the Grafana admin password in the UI now; `GRAFANA_ADMIN_PASSWORD` only
-applies on first start.
+> **Why no public route yet.** `caddy/logs.aneskurtovic.caddy` is committed and
+> ready, but it cannot be used: the platform's Caddy has never been deployed —
+> the box still runs `ludo-caddy` from the application's compose, and
+> `/opt/caddy` does not exist. Routing Grafana through `ludo-caddy` instead would
+> mean adding `GRAFANA_USERNAME` / `GRAFANA_PASSWORD_HASH` to *that* service's
+> `environment:` block (it has no `env_file`), i.e. an application repo change
+> and deploy — which is precisely the platform/application entanglement this repo
+> exists to undo. The snippet goes live as a step of the **edge proxy**
+> migration; until then the loopback port is the access path, and it is not
+> publicly exposed, so the basic-auth gate is not yet load-bearing.
 
-**Rollback:** `rm /opt/caddy-sites/logs.aneskurtovic.caddy`, reload Caddy, stop
-the grafana container.
+**Rollback:** stop the grafana container. Nothing outside this compose project
+has been touched.
 
 ## Phase 3 — cutover (the point of no easy return)
 
