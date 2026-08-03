@@ -112,24 +112,44 @@ Three things that must hold, and are easy to miss:
    `docker/caddy/ludo.caddy` (PR #124). Either is fine; the deploy script names
    the path explicitly. Don't assume one from the other.
 
+> **Do NOT drop the snippet straight into `/opt/caddy-sites/` during this
+> phase.** The *old* proxy already mounts that directory — `ludo-caddy` has
+> `- /opt/caddy-sites:/etc/caddy/sites:ro` and its baked Caddyfile does
+> `import /etc/caddy/sites/*.caddy`. Adding `ludo.caddy` there defines
+> `{$DOMAIN}`, `www.{$DOMAIN}` and `{$STAGE_DOMAIN}` **twice**: once from the
+> baked Caddyfile, once from the import. Caddy rejects duplicate site addresses.
+>
+> Nothing appears to break at first, because the running proxy keeps serving the
+> config it already has in memory. It breaks at the next event that makes Caddy
+> *load* config — a deploy that recreates the container, a `caddy reload`, or a
+> host reboot — and then the proxy will not start at all and **every site on the
+> box goes down**, at a moment nobody has connected to this change. Stage it in a
+> directory the running proxy does not read:
+
 ```bash
-cp <app>/docker/caddy/ludo.caddy /opt/caddy-sites/ludo.caddy
-ls -1 /opt/caddy-sites/
+# Build the FUTURE sites directory beside the live one. Nothing reads this path.
+install -d -m 755 /opt/caddy-sites.next
+cp /opt/caddy-sites/*.caddy            /opt/caddy-sites.next/
+cp <app>/docker/caddy/ludo.caddy       /opt/caddy-sites.next/
+ls -1 /opt/caddy-sites.next/
 # expect: aneskurtovic.caddy  ci.aneskurtovic.caddy  helifilm.aneskurtovic.caddy
 #         ludo.caddy  uptime.aneskurtovic.caddy
 ```
 
 Validate the whole future config **before** touching anything, using a throwaway
-container (no ports, so no conflict):
+container (no ports, so no conflict) pointed at the staged directory:
 
 ```bash
 docker run --rm \
   -v /opt/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
-  -v /opt/caddy-sites:/etc/caddy/sites:ro \
+  -v /opt/caddy-sites.next:/etc/caddy/sites:ro \
   --env-file /opt/caddy/caddy.env \
   caddy:2.8-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 ```
 Expected: `Valid configuration`. **Do not proceed until this passes.**
+
+The staged snippet moves into the live directory in Phase 2, once the old proxy
+is stopped and can no longer be tripped by it.
 
 ## Phase 1 — freeze deploys
 
@@ -139,8 +159,13 @@ will either collide on `:80` or delete the proxy as an orphan (see constraint 3)
 ## Phase 2 — cutover (the outage window, ~30–60s)
 
 ```bash
-# 1. Copy the certificates. Stopped first, so nothing writes mid-copy.
+# 0. Stop the old proxy, THEN move the staged snippet in. Doing it in this
+#    order is what kept Phase 0 inert: until now /opt/caddy-sites/ludo.caddy
+#    would have collided with the site blocks baked into ludo-caddy's Caddyfile.
 docker stop ludo-caddy
+cp /opt/caddy-sites.next/ludo.caddy /opt/caddy-sites/ludo.caddy
+
+# 1. Copy the certificates. Stopped first, so nothing writes mid-copy.
 docker volume create caddy-data
 docker run --rm -v ludo-caddy-data:/from:ro -v caddy-data:/to \
   alpine sh -c 'cp -a /from/. /to/ && echo copied'
