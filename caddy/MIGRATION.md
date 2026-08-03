@@ -99,14 +99,15 @@ Three things that must hold, and are easy to miss:
    per-network, so any container on that network resolves them regardless of
    project. Drop `ludo-network` from the proxy's compose and every Ludo route
    502s.
-3. **The snippet belongs in the application's repo**, not this one —
-   `Ludo.On.Steroids/deploy/ludo.caddy`, the same way Helifilm keeps
-   `deploy/helifilm.aneskurtovic.caddy`. Tenants own their own routing; that is
-   the whole point of the split. Phase 4 then teaches the app's deploy to write
-   it.
+3. **The snippet belongs in the application's repo**, not this one. Tenants own
+   their own routing; that is the whole point of the split. Phase 4 then teaches
+   the app's deploy to write it. Note the two tenants disagree on where it
+   lives — Helifilm uses `deploy/helifilm.aneskurtovic.caddy`, Ludo uses
+   `docker/caddy/ludo.caddy` (PR #124). Either is fine; the deploy script names
+   the path explicitly. Don't assume one from the other.
 
 ```bash
-cp <app>/deploy/ludo.caddy /opt/caddy-sites/ludo.caddy
+cp <app>/docker/caddy/ludo.caddy /opt/caddy-sites/ludo.caddy
 ls -1 /opt/caddy-sites/
 # expect: aneskurtovic.caddy  ci.aneskurtovic.caddy  helifilm.aneskurtovic.caddy
 #         ludo.caddy  uptime.aneskurtovic.caddy
