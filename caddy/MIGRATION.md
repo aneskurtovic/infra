@@ -49,6 +49,12 @@ Three constraints force the sequence:
 Nothing here touches the running proxy.
 
 ```bash
+# Get this repo onto the box. It is PUBLIC, so HTTPS needs no credentials —
+# the host has no GitHub auth configured and does not need any.
+git clone https://github.com/aneskurtovic/infra.git /tmp/infra \
+  || git -C /tmp/infra pull --ff-only
+# `<infra>` below means /tmp/infra
+
 # Platform config
 install -d -m 755 /opt/caddy
 cp <infra>/caddy/Caddyfile        /opt/caddy/Caddyfile
