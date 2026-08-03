@@ -36,23 +36,55 @@ apt-get install -y -qq \
   git vim wget ufw acl
 
 # ------------------------------------------------------------------ docker --
-log "Docker Engine + Compose v2"
-if ! command -v docker >/dev/null 2>&1; then
-  install -m 0755 -d /etc/apt/keyrings
+log "Docker Engine + Compose v2 + Buildx"
+
+# The APT repo is set up on EVERY run, not only on a fresh host. It used to sit
+# inside the `! command -v docker` branch below, which meant a host that already
+# had Docker from any other source — a provider image, get.docker.com, Ubuntu's
+# `docker.io` — never got Docker's repo and therefore could never `apt-get
+# install docker-buildx-plugin`. Observed in prod 2026-08-03: engine 29.2.1 and
+# the compose plugin present, buildx absent, `docker.list` missing entirely.
+install -m 0755 -d /etc/apt/keyrings
+if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg |
     gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-    >/etc/apt/sources.list.d/docker.list
+fi
+docker_list="deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+if [[ "$(cat /etc/apt/sources.list.d/docker.list 2>/dev/null)" != "$docker_list" ]]; then
+  echo "$docker_list" >/etc/apt/sources.list.d/docker.list
   apt-get update -qq
+fi
+
+# Engine packages stay guarded. Installing docker-ce over an engine that came
+# from somewhere else can replace packages and bounce the daemon, taking every
+# running container with it — not something a re-run of this script should ever
+# do to a live host.
+if ! command -v docker >/dev/null 2>&1; then
   apt-get install -y -qq docker-ce docker-ce-cli containerd.io \
     docker-buildx-plugin docker-compose-plugin
-  echo "docker: installed"
+  echo "docker: engine installed"
 else
-  echo "docker: already installed"
+  echo "docker: engine already installed (left alone)"
 fi
+
+# CLI plugins ARE ensured every run. They are standalone binaries under
+# /usr/libexec/docker/cli-plugins — adding them neither restarts the daemon nor
+# touches a running container, so this is safe on a live host in a way the
+# engine packages are not.
+#
+# Buildx is not optional: current Docker Compose uses Bake as its default
+# builder, and without buildx every `compose build` silently degrades to the
+# deprecated legacy builder with only a WARN line.
+apt-get install -y -qq docker-buildx-plugin docker-compose-plugin
+
 systemctl enable --now docker
+
+if ! docker buildx version >/dev/null 2>&1; then
+  echo "WARNING: docker buildx is still unavailable after installing docker-buildx-plugin." >&2
+  echo "         'docker compose build' will fall back to the deprecated legacy builder." >&2
+  echo "         Check that /etc/apt/sources.list.d/docker.list resolves for this release." >&2
+fi
 
 # ----------------------------------------------------------------- network --
 # The ONE shared network. The edge proxy joins it and reverse-proxies to each
