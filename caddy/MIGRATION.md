@@ -62,15 +62,40 @@ cp <infra>/caddy/docker-compose.yml /opt/caddy/docker-compose.yml
 install -m 600 /dev/null /opt/caddy/caddy.env
 ```
 
-Fill `/opt/caddy/caddy.env` from `.env.example`. Copy the tenant values out of
-the application's existing `.env` so snippets keep resolving:
+Fill `/opt/caddy/caddy.env` with the tenant values the snippets reference. Read
+them from the **running proxy**, not from any `.env` file:
 
 ```bash
-grep -E '^(DOMAIN|STAGE_DOMAIN|UPTIME_KUMA_USERNAME|UPTIME_KUMA_PASSWORD_HASH)=' \
-  /opt/ludo/app/.env >> /opt/caddy/caddy.env
-echo 'CADDY_ACME_EMAIL=admin@ludo-nexus.com' >> /opt/caddy/caddy.env
+{
+  echo "CADDY_ACME_EMAIL=admin@ludo-nexus.com"
+  for v in DOMAIN STAGE_DOMAIN UPTIME_KUMA_USERNAME UPTIME_KUMA_PASSWORD_HASH; do
+    echo "$v=$(docker exec ludo-caddy printenv "$v")"
+  done
+} > /opt/caddy/caddy.env
 chmod 600 /opt/caddy/caddy.env
+
+# Fail here, not three steps later. An empty value is not a harmless blank.
+while IFS='=' read -r k v; do
+  [ -n "$v" ] || echo "MISSING VALUE: $k" >&2
+done < /opt/caddy/caddy.env
+cut -d= -f1 /opt/caddy/caddy.env    # names only — safe to share, unlike the file
 ```
+
+> This used to `grep -E '^(DOMAIN|STAGE_DOMAIN|…)=' /opt/ludo/app/.env`, and on
+> the real box that **silently produced an incomplete file**: `STAGE_DOMAIN`
+> matched, `DOMAIN` did not (a leading BOM or whitespace defeats `^DOMAIN=`,
+> while Compose's own dotenv parser tolerates it — so the app worked fine and the
+> copy did not).
+>
+> The failure surfaced two steps later as `server block without any key is global
+> configuration, and if used, it must be first` — because Caddy expands a missing
+> `{$DOMAIN}` to an *empty string*, turning `{$DOMAIN} { … }` into a keyless block,
+> which is the syntax for global options. Nothing in that message points at a
+> missing environment variable.
+>
+> Reading from the running container sidesteps the whole class: those are the
+> values actually in effect, already parsed, with no quoting, BOM, or
+> file-location guesswork.
 
 ### Extract the application's site blocks into a tenant snippet
 
