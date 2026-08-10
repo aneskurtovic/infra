@@ -304,7 +304,10 @@ does. Until now Grafana has been reachable only over an SSH tunnel to
 `127.0.0.1:3000`.
 
 ```bash
-docker exec caddy caddy hash-password        # store the HASH, never the password
+# `-it` is required: hash-password PROMPTS on stdin, and `docker exec` without a
+# TTY hands it a closed one, so it reads EOF and dies with a bare `Error: EOF`
+# that says nothing about a missing terminal. Store the HASH, never the password.
+docker exec -it caddy caddy hash-password
 cat >> /opt/caddy/caddy.env <<'EOF'
 GRAFANA_USERNAME=operator
 GRAFANA_PASSWORD_HASH='PASTE_THE_HASH_HERE'
