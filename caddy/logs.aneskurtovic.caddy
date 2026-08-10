@@ -8,14 +8,27 @@
 # (/opt/caddy-sites, imported by the edge Caddy) and reverse-proxied to the
 # grafana container on the shared `edge` network.
 #
-# Kept behind Caddy basic_auth even though Grafana has its own login, for the
-# same reason as the monitoring dashboard: the outer gate limits exposure of a
-# UI that can read EVERY tenant's logs, and protects a freshly provisioned
-# instance from public probing before the admin password is rotated. The bcrypt
-# hash is NEVER committed — it reaches Caddy via environment
-# (GRAFANA_USERNAME / GRAFANA_PASSWORD_HASH), generated on the box with
-# `docker exec caddy caddy hash-password`. That is why this file is safe to
-# publish. See observability/MIGRATION.md.
+# Authentication is GRAFANA'S OWN, deliberately — no Caddy basic_auth in front.
+# The uptime dashboard keeps its outer gate; this one does not, because stacking
+# them here actively broke login: the browser keeps sending
+# `Authorization: Basic …` on every request once the gate is satisfied, Grafana's
+# own basic-auth client tries to resolve that user, fails with "no user found",
+# and 401s even after a correct form login — the header outranks the session
+# cookie. Stripping the header with `header_up -Authorization` fixes that but
+# then breaks Grafana API tokens, which travel in the same header.
+#
+# What the gate was protecting against is covered without it:
+#   - GF_AUTH_ANONYMOUS_ENABLED=false, so nothing is readable unauthenticated;
+#   - the bootstrap admin password is set from observability.env at provisioning
+#     and must be rotated off its seed value — that is the control that matters;
+#   - X-Robots-Tag below keeps the instance out of search indexes.
+#
+# Trade-off accepted knowingly: a single auth layer on a UI that can read EVERY
+# tenant's logs. If that stops being acceptable, add SSO/OAuth in GRAFANA rather
+# than a second HTTP gate here — one login, and no header collision.
+#
+# GRAFANA_USERNAME / GRAFANA_PASSWORD_HASH in /opt/caddy/caddy.env are unused as
+# of this change; harmless to leave, safe to delete.
 #
 # Loki itself is deliberately NOT routed here. It has no authentication and its
 # only host binding is 127.0.0.1 — Grafana is the sole public path to logs.
@@ -32,10 +45,6 @@ logs.aneskurtovic.com {
 		format json
 	}
 
-	basic_auth {
-		{$GRAFANA_USERNAME} {$GRAFANA_PASSWORD_HASH}
-	}
-
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
@@ -47,6 +56,9 @@ logs.aneskurtovic.com {
 		-X-Powered-By
 	}
 
+	# No header_up -Authorization here on purpose: with no gate in front, the only
+	# Authorization header Grafana sees is one a client genuinely meant for it
+	# (an API token), and stripping it would break API access.
 	reverse_proxy grafana:3000
 	encode gzip zstd
 }
