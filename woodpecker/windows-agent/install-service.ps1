@@ -19,12 +19,29 @@
     privileges. Running as the ordinary desktop user keeps CI at the same
     privilege level as the person who would otherwise run these builds by hand.
 
-    Windows stores the supplied password in Credential Manager under the task.
-    Registering a "logged on or not" task requires the "Log on as batch job"
-    right, which local administrators hold -- hence the elevation check.
+    By default the task uses an S4U (Service-for-User) logon: Windows issues an
+    identity token for the account without authenticating a password, so the
+    task starts at boot with no interactive logon and NO CREDENTIAL STORED
+    ANYWHERE. This is also the only option that works cleanly on a machine
+    signed into with a Windows Hello PIN, where the user may not know or have a
+    usable account password.
+
+    The cost of S4U is that the token carries no network credentials: the task
+    cannot reach SMB shares or anything authenticating as this user over the
+    network. A build agent needs local disk, local toolchains and OUTBOUND TCP
+    (gRPC to the server, HTTPS to the forge), none of which use that identity.
+
+    -WithPassword switches to a classic password logon instead, which does grant
+    network credentials. Windows stores the password in Credential Manager.
+
+    Either way, registration needs the "Log on as batch job" right, which local
+    administrators hold -- hence the elevation check.
 
 .EXAMPLE
     .\install-service.ps1 -Server 100.120.41.12:9000
+
+.EXAMPLE
+    .\install-service.ps1 -Server 100.120.41.12:9000 -WithPassword
 
 .EXAMPLE
     .\install-service.ps1 -Remove
@@ -35,6 +52,7 @@ param(
     [string]$AgentRoot = 'C:\woodpecker',
     [string]$TaskName  = 'WoodpeckerAgent',
     [string]$User      = "$env:USERDOMAIN\$env:USERNAME",
+    [switch]$WithPassword,
     [switch]$Remove
 )
 
@@ -99,30 +117,41 @@ $settings = New-ScheduledTaskSettingsSet `
 # Windows would kill a perfectly healthy agent and leave no obvious trace.
 # MultipleInstances IgnoreNew stops a restart from racing a running agent.
 
-Write-Host ''
-Write-Host "The task runs as $User and must start without an interactive logon,"
-Write-Host 'so Windows needs that account password to store in Credential Manager.'
-$password = Read-Host -AsSecureString "Password for $User"
-$plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-           [Runtime.InteropServices.Marshal]::SecureStringToBSTR($password))
-if (-not $plain) { throw 'No password entered.' }
-
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     Write-Host "Replaced existing task '$TaskName'."
 }
 
-Register-ScheduledTask `
-    -TaskName    $TaskName `
-    -Action      $action `
-    -Trigger     $trigger `
-    -Settings    $settings `
-    -User        $User `
-    -Password    $plain `
-    -RunLevel    Limited `
-    -Description 'Woodpecker CI agent (local backend). Managed by infra/woodpecker/windows-agent.' | Out-Null
+$description = 'Woodpecker CI agent (local backend). Managed by infra/woodpecker/windows-agent.'
 
-Write-Host "Registered '$TaskName'."
+if ($WithPassword) {
+    Write-Host ''
+    Write-Host "The task runs as $User without an interactive logon, so Windows needs"
+    Write-Host 'that account password to store in Credential Manager.'
+    $secure = Read-Host -AsSecureString "Password for $User"
+    $plain  = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+    if (-not $plain) { throw 'No password entered.' }
+
+    Register-ScheduledTask `
+        -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
+        -User $User -Password $plain -RunLevel Limited -Description $description | Out-Null
+
+    Write-Host "Registered '$TaskName' with a stored password logon."
+} else {
+    # S4U: an identity token for $User with no password authentication, so the
+    # task runs at boot with nothing stored. Required on a machine signed into
+    # with a Windows Hello PIN, where there may be no usable account password.
+    # Trade-off: no network credentials -- fine for local builds and outbound
+    # connections, not for SMB or anything authenticating as this user remotely.
+    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType S4U -RunLevel Limited
+
+    Register-ScheduledTask `
+        -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
+        -Principal $principal -Description $description | Out-Null
+
+    Write-Host "Registered '$TaskName' with an S4U logon (no password stored)."
+}
 
 # --- verify -------------------------------------------------------------------
 

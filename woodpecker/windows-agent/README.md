@@ -57,8 +57,18 @@ restarts on failure every minute, and has no execution time limit. It stages a
 copy of `start-agent.ps1` into `C:\woodpecker\` so the task does not depend on
 this git checkout remaining where it is.
 
-Windows needs the account password to run a task without an interactive logon;
-it is stored in Credential Manager, not in any file here.
+By default the task uses an **S4U logon**: Windows issues an identity token for
+the account without authenticating a password, so nothing is stored anywhere and
+the task still starts at boot with no interactive logon. This is also the only
+option that works on a machine signed into with a Windows Hello PIN, where there
+may be no usable account password at all.
+
+S4U's one limitation is that the token carries **no network credentials**. The
+agent needs local disk, local toolchains, and *outbound* TCP (gRPC to the
+server, HTTPS to the forge) — none of which authenticate as this user. If a
+pipeline ever needs an SMB share or another resource authenticating as this
+account over the network, re-register with `-WithPassword`, which stores the
+password in Credential Manager instead.
 
 To remove: `.\install-service.ps1 -Remove`.
 
