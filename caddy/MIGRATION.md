@@ -314,12 +314,35 @@ GRAFANA_PASSWORD_HASH='PASTE_THE_HASH_HERE'
 EOF
 
 cp <infra>/caddy/logs.aneskurtovic.caddy /opt/caddy-sites/
-docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-# Non-zero → rm the snippet and fix caddy.env. Do NOT reload a config that does
+
+# Validate in a THROWAWAY container, because the running one cannot see the two
+# variables you just added — see below. This is the same gate as Phase 0.
+docker run --rm \
+  -v /opt/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
+  -v /opt/caddy-sites:/etc/caddy/sites:ro \
+  --env-file /opt/caddy/caddy.env \
+  caddy:2.8-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+# Non-zero → rm the snippet and fix caddy.env. Do NOT apply a config that does
 # not validate: the healthcheck is `caddy validate`, so a bad snippet marks the
 # whole proxy unhealthy and takes every site's next reload with it.
-docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+
+# RECREATE, do not reload.
+cd /opt/caddy
+docker compose --env-file /opt/caddy/caddy.env -f docker-compose.yml up -d --force-recreate caddy
+docker ps --filter name=^caddy$ --format '{{.Names}} {{.Status}}'
 ```
+
+> **`caddy reload` cannot pick these up, and failing here is confusing.**
+> `GRAFANA_USERNAME` / `GRAFANA_PASSWORD_HASH` reach Caddy through `env_file`,
+> and a container's environment is fixed when it is created. `docker exec caddy
+> caddy reload` starts a new process *inside the existing container*, so it
+> inherits the old environment — the two variables are still unset, `{$…}`
+> expands to empty, and you get an empty `basic_auth` line rather than any
+> message about a missing variable.
+>
+> Recreating the container is therefore mandatory, and it costs a few seconds of
+> downtime for **every** site on the box, not just this one. Validate first, then
+> recreate deliberately — this is the one step of Phase 3b that is not free.
 
 Point `logs.aneskurtovic.com` at the box first (grey-cloud for first issuance).
 Then update `GRAFANA_ROOT_URL` in `/opt/observability/observability.env` from

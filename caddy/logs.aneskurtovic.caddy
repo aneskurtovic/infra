@@ -1,10 +1,8 @@
-# NOT YET ACTIVE. This snippet requires the PLATFORM Caddy, which has not been
-# deployed — the box still runs the application's own `ludo-caddy`, and
-# /opt/caddy does not exist. Copying this into /opt/caddy-sites today would fail
-# validation, because `ludo-caddy` has no env_file and so cannot resolve the two
-# variables below. Deploy it as a step of caddy/MIGRATION.md. Until then Grafana
-# is reached on its loopback port over an SSH tunnel — see
-# observability/MIGRATION.md Phase 2.
+# Requires the PLATFORM Caddy (it needs an env_file to resolve the two variables
+# below; the application's old `ludo-caddy` had none). That proxy went live on
+# 2026-08-10 — see caddy/MIGRATION.md Phase 3b for the install, which must
+# RECREATE the container rather than reload it, because the variables arrive
+# through env_file and a running container's environment is fixed at creation.
 #
 # Edge site for Grafana — dropped into the host's Caddy sites dir
 # (/opt/caddy-sites, imported by the edge Caddy) and reverse-proxied to the
