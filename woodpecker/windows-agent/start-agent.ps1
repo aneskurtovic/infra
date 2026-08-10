@@ -133,19 +133,13 @@ try {
     $env:WOODPECKER_GRPC_SECURE   = 'false'
     $env:WOODPECKER_BACKEND       = 'local'
 
-    # The `!` prefix makes the label MANDATORY: this agent accepts only workflows
-    # that explicitly ask for `platform: windows/amd64`. Without it, Woodpecker
-    # treats an unlabelled workflow as runnable anywhere and will hand Linux work
-    # to this machine, where a `services:` block fails with "unsupported step
-    # type" and a Linux image fails with `executable file not found in %PATH%`.
-    #
-    # That is not hypothetical: on 2026-08-10 this agent picked up two of Ludo
-    # Nexus's Linux workflows minutes after being unpaused, failing a prod deploy
-    # that had nothing to do with Windows. The alternative fix — labelling every
-    # workflow in every repo — is one forgotten file away from the same outage,
-    # and a new repo starts out forgotten by default. Constrain the agent, not
-    # each of its callers.
-    $env:WOODPECKER_AGENT_LABELS  = '!platform=windows/amd64'
+    # Deliberately NO WOODPECKER_AGENT_LABELS here. Agent labels cannot restrict
+    # what this agent accepts: the filter runs one way only — "an agent must be
+    # assigned every tag listed in a task" — so a task with no labels is a subset
+    # of every agent and matches all of them. Setting a label here (including the
+    # `!mandatory` form, which 3.16.0 stores verbatim as a custom label named
+    # `!platform` and never evaluates) changes nothing and reads as protection
+    # that does not exist. Routing is a WORKFLOW-side responsibility; see README.
     $env:WOODPECKER_MAX_WORKFLOWS = "$MaxWorkflows"
     $env:WOODPECKER_HOSTNAME      = $AgentHostname
     # Defaults to /etc/woodpecker/agent.conf, which cannot exist on Windows.
