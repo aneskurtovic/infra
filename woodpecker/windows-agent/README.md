@@ -21,6 +21,28 @@ untrusted fork can trigger it. It is why:
 - release pipelines that handle signing material stay on hosted CI;
 - the agent binary is **checksum-verified** before it is ever run.
 
+## Which workflows reach this agent
+
+**Only ones that ask for it.** `start-agent.ps1` sets
+`WOODPECKER_AGENT_LABELS='!platform=windows/amd64'`, and the `!` prefix makes
+that label mandatory — a workflow reaches this agent only if it declares:
+
+```yaml
+labels:
+  platform: windows/amd64
+```
+
+This matters more than it looks. Woodpecker treats an **unlabelled** workflow as
+runnable on *any* agent, so the moment a second agent of a different platform
+joins, every existing repo's Linux pipelines become eligible to land on Windows —
+where a `services:` block fails with `unsupported step type` and a Linux image
+fails with `executable file not found in %PATH%`. Nothing warns you; the
+pipelines simply start failing in a way that reads like a broken build.
+
+Constrain the agent rather than labelling every workflow in every repo: the
+per-repo approach is one forgotten file away from the same failure, and a newly
+added repo is forgotten by default.
+
 ## Install
 
 Three steps. Only the second needs elevation.
