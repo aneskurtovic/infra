@@ -35,6 +35,20 @@ services:
     expose:
       - "8000"
       - "9000"
+    ports:
+      # gRPC for agents that are NOT on this box, bound to the Tailscale address
+      # only. On-box agents keep using ci-network and are unaffected.
+      #
+      # CI_AGENT_GRPC_BIND is required rather than defaulted on purpose. A
+      # default would eventually be wrong on some host, and the failure mode of
+      # a wrong bind address here is publishing an authentication endpoint to
+      # the public internet. Never set this to 0.0.0.0 or leave it empty --
+      # Docker reads a bare ":9000:9000" as all interfaces.
+      #
+      # If tailscaled has not come up yet after a reboot the bind fails and this
+      # container restart-loops until it does. That is the intended behaviour:
+      # loud and closed beats quietly reachable.
+      - "${CI_AGENT_GRPC_BIND:?CI_AGENT_GRPC_BIND is required}:9000:9000"
     security_opt:
       - no-new-privileges:true
     deploy:

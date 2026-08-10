@@ -117,12 +117,73 @@ repo's workflows report (contexts under `ci/woodpecker/`). Add a `nightly` cron
 in the Woodpecker repo settings only if that repo defines cron-triggered
 workflows.
 
+## 7. Agents that do not run on this box
+
+The agent in `docker-compose.yml` reaches the server at `woodpecker-server:9000`
+over `ci-network`, so gRPC never leaves Docker. An agent on another machine — a
+Windows host, for instance, which the Docker backend cannot serve — needs a
+route to that port from outside.
+
+**That route is Tailscale, not a public endpoint.** The server publishes `:9000`
+bound to its tailnet address and nothing else:
+
+```bash
+# On this box, once:
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --accept-dns=false --hostname=hetzner-ci
+tailscale ip -4        # -> the value for CI_AGENT_GRPC_BIND
+```
+
+`--accept-dns=false` matters. Tailscale's MagicDNS rewrites `/etc/resolv.conf`
+by default; on a host whose Caddy does ACME and reverse-proxy lookups, silently
+replacing the resolver risks an outage for every site here in exchange for a CI
+convenience. Take the route, not the DNS.
+
+Then set `CI_AGENT_GRPC_BIND` in `/opt/ci/.env` and recreate **only** the server:
+
+```bash
+docker compose --env-file /opt/ci/.env -f docker-compose.yml config --quiet
+docker compose --env-file /opt/ci/.env -f docker-compose.yml up -d woodpecker-server
+docker inspect woodpecker-server --format '{{json .HostConfig.PortBindings}}'
+```
+
+That last line is the check that matters: the binding must show the tailnet
+address, never `0.0.0.0`. Verify from the remote machine that the port answers
+over the tailnet and **does not** answer on the public IP.
+
+Register the off-box agent in **Admin → Agents**, and pin it to the same version
+as the server. An agent whose entry shows an empty platform and a zero
+last-contact time has never connected — that is a created record, not a runner.
+
+Because the alternative gets proposed every time: exposing gRPC through the edge
+proxy on a public hostname would mean a Caddy restart affecting every site here,
+a certificate for a hostname that exists only for CI plumbing, and an
+authentication endpoint on the public internet. Tailscale removes that exposure
+rather than mitigating it.
+
 ## Recovery
 
 ```bash
 docker compose --env-file /opt/ci/.env -f docker-compose.yml logs --tail 200
 docker compose --env-file /opt/ci/.env -f docker-compose.yml up -d
 ```
+
+**The compose file must actually be on the box at the path the running
+containers record.** Compose reconstructs a project from container labels, so
+`docker compose ls` will happily list a project whose `docker-compose.yml` has
+been deleted — the stack keeps running and every management command fails. Check
+with:
+
+```bash
+docker inspect woodpecker-server \
+  --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}'
+ls -l "$(docker inspect woodpecker-server \
+  --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}')"
+```
+
+If the file is missing, restore it from this repository before doing anything
+else; a running-but-unmanageable stack is a problem you want to find on a
+Tuesday, not during an incident.
 
 Back up the `woodpecker-server-data` volume with the host backup system. Restoring
 it restores Woodpecker's database (repo setup, secrets, build metadata); the OAuth
