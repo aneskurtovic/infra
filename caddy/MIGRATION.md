@@ -8,6 +8,12 @@ tenant snippet in `/opt/caddy-sites`.
 for every site on the box; a mistake takes them all down at once. Read the whole
 runbook before starting, and do it in a maintenance window.
 
+> **Log — 2026-08-10:** Phases 0–3 ran on the production box. `caddy` holds
+> `:80/:443`, certificates were migrated (not re-issued), and all sites verified
+> against the origin. Phase 4 (the tenant's own repo, `Ludo.Nexus` PR #124) and
+> Phase 5 (cleanup after soak) remained open at that point. This is a log entry,
+> not a substitute for the check below — run it anyway.
+
 ## Confirm the box before you read further
 
 This directory has existed, committed and unexecuted, for some time. **A file in
@@ -42,6 +48,12 @@ day it was staged and the day someone runs the window:
   2026-08-04, it came from the `grep`-the-`.env` method that silently produced
   an incomplete file (see the note below). Rebuild it rather than inspecting it —
   the rebuild is inert until cutover and costs nothing.
+
+  **This rebuild only works before cutover.** It reads values out of the running
+  `ludo-caddy`; once that container is stopped, `docker exec` fails and the same
+  commands write a file of empty values — the exact breakage they exist to
+  prevent. After cutover the live `/opt/caddy/caddy.env` is the only copy of
+  those values, so back it up rather than regenerate it.
 
 Checking the repo instead of the box has already produced two wrong changes in
 this platform's history. Spend the ten seconds.
