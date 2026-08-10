@@ -16,13 +16,32 @@ first — the answer changes every command below:
 
 ```bash
 docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '443|caddy'
-ls -la /opt/caddy 2>&1
+ls -la /opt/caddy /opt/caddy-sites.next 2>&1
 ```
 
-- `ludo-caddy` holds `:80/:443` and `/opt/caddy` does not exist → **not migrated**;
-  this runbook applies in full.
-- `caddy` holds `:80/:443` and `/opt/caddy` exists → already migrated; you want
-  Phase 4/5 or nothing at all.
+**Only the port holder tells you whether cutover happened.** `/opt/caddy` is
+created by Phase 0, which is reversible and may have run weeks ago, so its
+existence proves nothing on its own:
+
+- `ludo-caddy` holds `:80/:443` → **not migrated**, whatever `/opt/caddy`
+  contains. If `/opt/caddy` and `/opt/caddy-sites.next` already exist, Phase 0
+  has run — re-run its *staging* step anyway (see "Phase 0 has already run"),
+  because the live sites directory drifts underneath it.
+- `caddy` holds `:80/:443` → already migrated; you want Phase 4/5 or nothing.
+
+### Phase 0 has already run
+
+Phase 0 is safe to repeat and **you should repeat the staging and validation**
+rather than trusting an old `/opt/caddy-sites.next`. Two things rot between the
+day it was staged and the day someone runs the window:
+
+- **New tenant snippets land in the live directory.** Anything added to
+  `/opt/caddy-sites` after `.next` was built is missing from the set you
+  validated, so the future config has never actually been checked.
+- **`caddy.env` may predate a fix to how it is built.** If it was written before
+  2026-08-04, it came from the `grep`-the-`.env` method that silently produced
+  an incomplete file (see the note below). Rebuild it rather than inspecting it —
+  the rebuild is inert until cutover and costs nothing.
 
 Checking the repo instead of the box has already produced two wrong changes in
 this platform's history. Spend the ten seconds.
@@ -153,12 +172,16 @@ Three things that must hold, and are easy to miss:
 
 ```bash
 # Build the FUTURE sites directory beside the live one. Nothing reads this path.
+# Clear it first: re-staging must MIRROR the live directory, and a stale file
+# left from an earlier attempt would be validated and then carried into Phase 2.
 install -d -m 755 /opt/caddy-sites.next
+rm -f /opt/caddy-sites.next/*.caddy
 cp /opt/caddy-sites/*.caddy            /opt/caddy-sites.next/
 cp <app>/docker/caddy/ludo.caddy       /opt/caddy-sites.next/
-ls -1 /opt/caddy-sites.next/
-# expect: aneskurtovic.caddy  ci.aneskurtovic.caddy  helifilm.aneskurtovic.caddy
-#         ludo.caddy  uptime.aneskurtovic.caddy
+
+# Expect: every snippet in /opt/caddy-sites, plus ludo.caddy. Diff, don't eyeball —
+# the whole point is that this set matches the live one.
+diff <(ls -1 /opt/caddy-sites/) <(ls -1 /opt/caddy-sites.next/ | grep -v '^ludo.caddy$')
 ```
 
 Validate the whole future config **before** touching anything, using a throwaway
@@ -181,6 +204,21 @@ is stopped and can no longer be tripped by it.
 Announce/ensure no application deploy runs until Phase 4. A deploy mid-window
 will either collide on `:80` or delete the proxy as an orphan (see constraint 3).
 
+**Freezing the on-box agent is not enough.** There is now an off-box Windows
+agent (`woodpecker/windows-agent`) that reaches gRPC over the tailnet, published
+directly by the `woodpecker-server` container — it does not traverse Caddy. So it
+keeps its connection right through the outage and will happily pick up a queued
+build while the proxy is down. Freeze at the source instead of per-agent:
+
+```bash
+# Woodpecker UI -> Admin -> Agents: pause every agent, on-box and off-box alike.
+# Verify no workflow is mid-flight before starting Phase 2:
+docker exec woodpecker-server woodpecker-server --version   # server reachable
+```
+
+Confirm in the UI that the queue is empty and every agent shows paused. An agent
+you forgot is an agent that deploys into the window.
+
 ## Phase 2 — cutover (the outage window, ~30–60s)
 
 ```bash
@@ -191,6 +229,10 @@ docker stop ludo-caddy
 cp /opt/caddy-sites.next/ludo.caddy /opt/caddy-sites/ludo.caddy
 
 # 1. Copy the certificates. Stopped first, so nothing writes mid-copy.
+#    Assert the SOURCE first: `docker run -v <name>:/from` silently CREATES an
+#    empty volume when the name is wrong, so a typo here copies nothing, succeeds,
+#    and you find out when every site serves a self-signed cert.
+docker volume inspect ludo-caddy-data >/dev/null || { echo 'SOURCE VOLUME MISSING'; exit 1; }
 docker volume create caddy-data
 docker run --rm -v ludo-caddy-data:/from:ro -v caddy-data:/to \
   alpine sh -c 'cp -a /from/. /to/ && echo copied'
@@ -212,19 +254,32 @@ docker ps --filter name=^caddy$ --format '{{.Names}} {{.Status}}'
 Derive the list from `/opt/caddy-sites/` rather than trusting the one below —
 a hostname added since this was written and missed here is a site nobody checks.
 
+**Every site here sits behind Cloudflare.** A plain `curl https://…` therefore
+asks Cloudflare, which can answer `200` from cache or a still-warm connection
+while the origin is broken — a green check that proves nothing about the proxy
+you just replaced. Pin every request to the box with `--resolve`:
+
 ```bash
+BOX=$(curl -s ifconfig.me)      # or hardcode the box's public IP
 for u in https://ludo-nexus.com/health \
          https://stage.ludo-nexus.com/health \
          https://aneskurtovic.com/ \
          https://helifilm.aneskurtovic.com/ \
          https://ci.aneskurtovic.com/ \
          https://uptime.aneskurtovic.com/ ; do
-  printf '%-45s %s\n' "$u" "$(curl -s -o /dev/null -w '%{http_code}' -L "$u")"
+  h=$(echo "$u" | awk -F/ '{print $3}')
+  printf '%-45s %s\n' "$u" \
+    "$(curl --resolve "$h:443:$BOX" -s -o /dev/null -w '%{http_code}' -L "$u")"
 done
 ```
 Expected: `200` everywhere except the uptime dashboard, which returns `401`
 (its basic-auth gate). Also confirm the game loads in a browser and that
 certificates are the **migrated** ones (no fresh-issuance delay).
+
+Derive the list from `/opt/caddy-sites/`, but know what each hostname *should*
+return before you call something a failure. A non-HTTP endpoint served by a
+snippet — a gRPC backend, for instance — will not return `200`, and treating
+that as a red light sends you into a rollback you did not need.
 
 **If anything is wrong, roll back now** (see below) rather than pressing on.
 
@@ -289,8 +344,16 @@ Keep the old volume for at least a week — it is the fastest rollback.
 
 ```bash
 cd /opt/caddy && docker compose -f docker-compose.yml down
+
+# REQUIRED, and easy to skip under pressure: Phase 2 put ludo.caddy into the live
+# sites directory, which ludo-caddy ALSO imports while defining the same four site
+# addresses in its own baked Caddyfile. Leave it there and the old proxy refuses to
+# start on duplicate site addresses — your rollback fails with every site down.
+rm -f /opt/caddy-sites/ludo.caddy
+
 cd /opt/ludo/app && docker compose up -d --no-deps caddy
-curl -s -o /dev/null -w '%{http_code}\n' https://ludo-nexus.com/health
+curl --resolve ludo-nexus.com:443:<box-ip> \
+  -s -o /dev/null -w '%{http_code}\n' https://ludo-nexus.com/health
 ```
 The old container definition, its `ludo-caddy-data` volume, and the app's own
 `Caddyfile` are untouched through Phase 4, so this restores the exact prior
