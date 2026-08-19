@@ -22,6 +22,45 @@ values live in three root-only files the compose reads at runtime:
 Per-repository **deploy** credentials are added later in the Woodpecker UI and
 live inside Woodpecker's database volume — never in any file or this repo.
 
+> **This boundary protects git, not the runtime.** The table above is true and
+> worth keeping, but do not read more into it than it says. The values are
+> readable at runtime by anything with Docker access: `docker inspect
+> woodpecker-agent` prints `WOODPECKER_AGENT_SECRET` in plaintext to a user with
+> no sudo and no read access to `/opt/ci/agent.env`. Docker group membership is
+> root-equivalent, so this is not an escalation — it means the root-only file
+> mode is not a second line of defence. See `BACKLOG.md` **P5**.
+
+## What a pipeline can actually reach
+
+Stated plainly, because the compose file's comments understate it and the network
+layout invites the wrong conclusion.
+
+`woodpecker-agent` is attached to `ci-network` only, and genuinely cannot reach
+`ludo-network` at layer 3. **That containment is decorative.** The agent mounts
+`/var/run/docker.sock` read-write — it must, to create step containers — and with
+a read-write socket it can create a container on any network, mount host `/`,
+read every volume including `caddy-data` (private keys) and
+`woodpecker-server-data` (every deploy secret), and read any container's
+environment without touching the network at all.
+
+So the control that actually bounds a compromised build is **who can trigger a
+pipeline**, not what the pipeline can see:
+
+- `WOODPECKER_OPEN=false` — no self-registration;
+- `WOODPECKER_REPO_OWNERS` — only your own repositories may be enabled;
+- repository-scoped deploy secrets — a pipeline holds only its own credential;
+- `WOODPECKER_MAX_WORKFLOWS=1` — one workflow at a time, so CI never contends
+  with live services.
+
+Keep pipelines untrusted (no `privileged`, no host volume mounts) and treat the
+right to enable a repository as the security decision it is.
+
+The off-box Windows agent is **weaker still**, not equivalent: it uses the
+`local` backend, so steps run directly on that host with no container at all.
+`windows-agent/README.md` states this plainly under "Trust boundary" and "What
+this does not do" — read it before enabling any repository that the Windows
+agent will serve.
+
 ## 1. DNS and GitHub OAuth
 
 1. Create a proxied DNS record `ci.aneskurtovic.com` → `<HOST_IP>`.
@@ -185,9 +224,43 @@ If the file is missing, restore it from this repository before doing anything
 else; a running-but-unmanageable stack is a problem you want to find on a
 Tuesday, not during an incident.
 
-Back up the `woodpecker-server-data` volume with the host backup system. Restoring
-it restores Woodpecker's database (repo setup, secrets, build metadata); the OAuth
-client secret and agent secret are restored separately from the host secret files.
+### Backing up `woodpecker-server-data`
+
+> **There is no automated host backup system yet.** An earlier version of this
+> section told you to "back up the volume with the host backup system," which
+> does not exist — see `BACKLOG.md` **P1**. Until it does, this is manual, and
+> nobody is doing it for you.
+
+This volume holds Woodpecker's database: repository setup, **every
+per-repository deploy secret**, and build metadata. It is the most tedious thing
+on the box to reconstruct by hand, because nothing enumerates which repos hold
+which secrets — you find out when a pipeline fails.
+
+Take one before any upgrade, and after adding repositories or secrets:
+
+```bash
+# /opt/backups does not exist on a box where this has never been run. Create it
+# root-only first — a bind mount would otherwise create it silently, world-
+# readable, and these archives contain every deploy secret in the clear.
+install -d -m 700 /opt/backups
+
+docker compose --env-file /opt/ci/.env -f docker-compose.yml stop woodpecker-server
+docker run --rm -v woodpecker-server-data:/data:ro -v /opt/backups:/backup \
+  alpine:3.22 tar -C /data -czf /backup/woodpecker-$(date -u +%Y%m%dT%H%M%SZ).tar.gz .
+chmod 600 /opt/backups/woodpecker-*.tar.gz
+docker compose --env-file /opt/ci/.env -f docker-compose.yml start woodpecker-server
+```
+
+Stop the server first — this is a live database, and copying its files while it
+writes can yield an archive that restores into a corrupt state.
+
+**Copy the archive off the box.** An archive on the disk you are protecting
+against is not a backup. It also contains every deploy secret in the clear, so
+store it encrypted and mode `600`.
+
+Restoring the volume restores the database. The OAuth client secret and the agent
+secret are **not** in it — those live in `/opt/ci/server-oauth.env` and
+`/opt/ci/agent.env` and are restored separately.
 
 ## Upgrades
 

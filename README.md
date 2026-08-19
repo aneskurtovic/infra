@@ -61,7 +61,11 @@ flowchart LR
 - **Loki + Alloy + Grafana** — one collector reads every container's stdout over
   a read-only Docker socket and labels it by `stack`, so each application's logs
   are queryable without SSH. Loki has no auth and is loopback-only; Grafana is
-  the sole public path, behind Basic auth.
+  the sole public path, behind **its own login**. An outer Caddy `basic_auth`
+  gate was tried and removed — the browser keeps sending `Authorization: Basic …`
+  once satisfied, and Grafana then 401s even after a correct form login. The
+  reasoning is written out in `caddy/logs.aneskurtovic.caddy`. The uptime
+  dashboard *does* keep its outer gate; the two are deliberately different.
 
 ## Design principles
 
@@ -69,9 +73,13 @@ flowchart LR
   with `:?required` guards; real values live in root-only files on the host
   (`/opt/ci/*.env`) and inside Woodpecker's database volume. That separation is
   what makes this repo safe to publish.
-- **Least-privilege deploys.** Deploy credentials are **repository-scoped, never
-  global** — each repo's pipeline can reach only its own target, as its own
-  least-privilege user. No pipeline holds a credential it doesn't need.
+- **Least-privilege deploys.** Deploy *credentials* are **repository-scoped,
+  never global** — each repo's pipeline is issued only its own target's
+  credential, as its own least-privilege user. No pipeline holds a credential it
+  doesn't need. Read that precisely: it bounds what a pipeline is *given*, not
+  what a compromised agent could *reach*. The agent holds a read-write Docker
+  socket, so the real control is who may enable a repository — see
+  "What a pipeline can actually reach" in `woodpecker/BOOTSTRAP.md`.
 - **Immutable, atomic releases.** Deploys rsync a build to a SHA-named directory
   and flip an atomic `current` symlink, keeping the last few for instant rollback.
 - **Pinned everything.** Server and agent images are version-pinned and upgraded
@@ -82,9 +90,19 @@ flowchart LR
   therefore opens by having you check the box, and any change made on the strength
   of "the repo says X" is a guess until `docker ps` agrees.
 
+## What's next
+
+[`BACKLOG.md`](BACKLOG.md) is the platform's open work: what is missing, why it
+matters on this specific box, and what "done" looks like for each item. It
+separates **defects found by measuring the box** (P1–P13) from **forward
+proposals** (P14–P21), so aspiration never outranks something that is actually
+broken. It also records what has been **considered and rejected**, with the file
+that settles each one — so a later review doesn't reopen a closed question.
+
 ## Layout
 
 ```
+BACKLOG.md             # open platform work, ranked; plus settled rejections
 host/
   bootstrap.sh         # one-time host setup: Docker, edge network, ufw, SSH, swap, fail2ban
   README.md            # platform-vs-application boundary; read-only agent user

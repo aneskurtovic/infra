@@ -8,7 +8,10 @@ Compose project on the shared `edge` network, served at
 
 The dashboard's monitors watch every project, so it belongs to the platform, not
 to one tenant. Run these as root on the box. `<edge-caddy>` is the container that
-owns `:80/:443` (currently `ludo-caddy`; will become a platform Caddy later).
+owns `:80/:443` — since 2026-08-10 that is the platform `caddy` (see
+`caddy/MIGRATION.md`); on a box where the edge migration has not run it is still
+the application's own `ludo-caddy`. Check before substituting:
+`docker ps --format '{{.Names}}\t{{.Ports}}' | grep 443`.
 
 ## 0. Preconditions
 

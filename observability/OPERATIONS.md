@@ -21,27 +21,49 @@ Retention is **7 days**, enforced by Loki's compactor. There is no archive.
 
 ## Reaching Grafana
 
-**Today it is loopback-only, over an SSH tunnel:**
+**Published at `https://logs.aneskurtovic.com`** since the edge-proxy migration
+ran on 2026-08-10 (`caddy/MIGRATION.md`, Phase 3b). The platform `caddy`
+container holds `:80/:443` and imports `caddy/logs.aneskurtovic.caddy` from
+`/opt/caddy-sites`.
+
+**The loopback path is still there, and still the one to use in an incident:**
 
 ```bash
 ssh -L 3000:127.0.0.1:3000 root@<box>     # then browse http://localhost:3000
 ```
 
-`caddy/logs.aneskurtovic.caddy` is committed but **not active** — it needs the
-platform Caddy, which has not been deployed (the box still runs the
-application's own `ludo-caddy`, and `/opt/caddy` does not exist). It goes live as
-Phase 3b of `caddy/MIGRATION.md`. The loopback port stays afterwards: when the
-edge proxy is broken is exactly when you need logs.
+That is deliberate and permanent, not a leftover: when the edge proxy is broken
+is exactly when you need to read logs, and routing the log UI through the thing
+you are debugging is a bad dependency.
 
-## The two authentication gates (once published)
+## The single authentication gate
 
-Grafana will sit behind Caddy `basic_auth` (`GRAFANA_USERNAME` /
-`GRAFANA_PASSWORD_HASH` in `/opt/caddy/caddy.env`) *and* its own login
-(`/opt/observability/observability.env`). Two different files, two different
-credentials — a common source of confusion when rotating.
+**Grafana's own login is the only gate, on purpose.** An outer Caddy `basic_auth`
+in front of it was tried and removed — once the browser satisfies the gate it
+sends `Authorization: Basic …` on every subsequent request, Grafana's own
+basic-auth client tries to resolve that user, fails with "no user found", and
+401s even after a correct form login. Stripping the header would then break
+Grafana API tokens, which travel in the same header. The full reasoning lives in
+`caddy/logs.aneskurtovic.caddy`; don't re-litigate it here.
+
+What covers the missing outer gate: `GF_AUTH_ANONYMOUS_ENABLED=false` (nothing
+is readable unauthenticated), `X-Robots-Tag` keeping the instance out of search
+indexes, and — the control that actually matters — the admin password having
+been rotated off its bootstrap seed.
+
+`GRAFANA_USERNAME` / `GRAFANA_PASSWORD_HASH` may still be present in
+`/opt/caddy/caddy.env`. They are **unused**; harmless to leave, safe to delete.
+
+> **Note the asymmetry.** The uptime dashboard *does* keep an outer Caddy gate
+> (`caddy/uptime.aneskurtovic.caddy`). Only Grafana dropped it, because only
+> Grafana consumes the `Authorization` header itself.
 
 Rotate the Grafana password **in the Grafana UI**. `GRAFANA_ADMIN_PASSWORD`
-applies on first start only; editing it later does nothing.
+(`/opt/observability/observability.env`) applies on first start only; editing it
+later does nothing.
+
+Grafana is a single login over **every tenant's logs**. If that stops being
+acceptable, add SSO/OAuth *inside Grafana* rather than a second HTTP gate.
 
 Loki itself has **no authentication**. Its only host binding is `127.0.0.1:3100`,
 and it is never routed through Caddy. Keep it that way — `auth_enabled: false`

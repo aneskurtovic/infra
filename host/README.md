@@ -25,6 +25,19 @@ The dividing line: **if a second application would need it too, it belongs here.
 Applications never publish container ports — they join `edge` and the proxy
 reaches them by container name, so the firewall never grows per-app holes.
 
+> **Known violation, as of 2026-08-19.** The line above is the intent, not yet
+> the state of the box. Three `/etc/systemd/system/` timers — `ludo-backup`,
+> `ludo-purge`, `ludo-docker-cleanup` — are installed by an *application's*
+> deploy script, and `ludo-docker-cleanup` (weekly `docker builder prune` +
+> `image prune`) is the **only** thing preventing box-wide disk exhaustion. A
+> change in that tenant's repo can silently remove the platform's sole disk
+> reclamation. Tracked as `BACKLOG.md` **P2**.
+>
+> Two other host-level settings that belong here and are currently unset:
+> journald has no `SystemMaxUse=` (2.4 GB and climbing toward a ~3.8 GB default
+> cap), and there is no `/etc/docker/daemon.json` — so Docker's log-size default
+> is unbounded and `live-restore` is off. `BACKLOG.md` **P8**.
+
 ## The read-only agent user
 
 `claude_ro` is a genuine least-privilege identity for automation and AI agents:

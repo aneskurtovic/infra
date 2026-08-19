@@ -28,10 +28,16 @@ The Caddy site (`caddy/uptime.aneskurtovic.caddy`) keeps Basic auth in front of 
 own login — the outer gate protects a fresh DB from public setup-page races and limits
 exposure of the UI. The bcrypt hash is **never committed**; it is provided to the edge
 Caddy via `UPTIME_KUMA_USERNAME` / `UPTIME_KUMA_PASSWORD_HASH` in that Caddy's
-environment (currently `ludo-caddy`; moves with the edge proxy later). Generate a hash:
+environment — since 2026-08-10 the platform `caddy`, which reads them from
+`/opt/caddy/caddy.env` via `env_file`. Because they arrive through `env_file`, a
+running container's environment is fixed at creation: changing either value
+requires **recreating** the container, not `caddy reload`. Generate a hash:
 
 ```bash
-docker exec <edge-caddy> caddy hash-password
+# `-it` is required: hash-password PROMPTS on stdin, and `docker exec` without a
+# TTY hands it a closed one, so it reads EOF and dies with a bare `Error: EOF`
+# that says nothing about a missing terminal.
+docker exec -it <edge-caddy> caddy hash-password
 ```
 
 Keep the env file mode `600`. The dashboard Basic-auth password and the Kuma
@@ -87,6 +93,13 @@ archives mode `600` off-host. Take a consistent **offline** backup before every 
 and after material monitor/notification changes:
 
 ```bash
+# /opt/backups does not exist on a box where this has never been run — and as of
+# 2026-08-19 it does not exist on the production box, meaning this procedure has
+# never actually been executed. Create it root-only FIRST: a bind mount would
+# otherwise create it 0755, and this archive holds admin credentials and
+# notification secrets.
+install -d -m 700 /opt/backups
+
 cd /opt/uptime-kuma
 docker compose stop uptime-kuma
 docker run --rm \
@@ -110,7 +123,9 @@ first.
 cd /opt/uptime-kuma
 docker compose stop uptime-kuma
 
-# Preserve current state before replacing it.
+# Preserve current state before replacing it. Same directory guard as above —
+# a bind mount silently creating /opt/backups 0755 defeats the chmod that follows.
+install -d -m 700 /opt/backups
 docker run --rm -v uptime-kuma-data:/data:ro -v /opt/backups:/backup \
   alpine:3.22 tar -C /data -czf /backup/uptime-kuma-pre-restore-$(date -u +%Y%m%dT%H%M%SZ).tar.gz .
 

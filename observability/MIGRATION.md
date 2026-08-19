@@ -151,16 +151,22 @@ applies on first start only. The **Loki** datasource is already provisioned:
 Explore → `{stack="platform"}` returns the edge proxy's and CI's logs, which have
 never been queryable before.
 
-> **Why no public route yet.** `caddy/logs.aneskurtovic.caddy` is committed and
-> ready, but it cannot be used: the platform's Caddy has never been deployed —
-> the box still runs `ludo-caddy` from the application's compose, and
-> `/opt/caddy` does not exist. Routing Grafana through `ludo-caddy` instead would
-> mean adding `GRAFANA_USERNAME` / `GRAFANA_PASSWORD_HASH` to *that* service's
-> `environment:` block (it has no `env_file`), i.e. an application repo change
-> and deploy — which is precisely the platform/application entanglement this repo
-> exists to undo. The snippet goes live as a step of the **edge proxy**
-> migration; until then the loopback port is the access path, and it is not
-> publicly exposed, so the basic-auth gate is not yet load-bearing.
+> **Why no public route yet** *(resolved 2026-08-10 — kept for the reasoning)*.
+> When this phase was written, `caddy/logs.aneskurtovic.caddy` was committed and
+> ready but unusable: the platform's Caddy had never been deployed, the box still
+> ran `ludo-caddy` from the application's compose, and `/opt/caddy` did not
+> exist. Routing Grafana through `ludo-caddy` instead would have meant adding
+> `GRAFANA_USERNAME` / `GRAFANA_PASSWORD_HASH` to *that* service's `environment:`
+> block (it has no `env_file`), i.e. an application repo change and deploy —
+> precisely the platform/application entanglement this repo exists to undo. So
+> the snippet waited for the **edge proxy** migration.
+>
+> **That migration has since run** (`caddy/MIGRATION.md`, Phases 0–3, 2026-08-10).
+> The platform `caddy` now owns `:80/:443` and Grafana is published at
+> `logs.aneskurtovic.com`. Note that the basic-auth gate referenced above was
+> **dropped** rather than made load-bearing — it broke Grafana's login. See
+> `caddy/logs.aneskurtovic.caddy` and `OPERATIONS.md`. The loopback port remains
+> the access path of choice during an incident.
 
 **Rollback:** stop the grafana container. Nothing outside this compose project
 has been touched.
