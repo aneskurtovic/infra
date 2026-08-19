@@ -85,10 +85,15 @@ From an **elevated** PowerShell:
 .\install-service.ps1 -Server 100.120.41.12:9000
 ```
 
-Registers a Scheduled Task that starts at boot whether or not anyone logs in,
-restarts on failure every minute, and has no execution time limit. It stages a
-copy of `start-agent.ps1` into `C:\woodpecker\` so the task does not depend on
-this git checkout remaining where it is.
+Registers a Scheduled Task that starts at boot whether or not anyone logs in and
+has no execution time limit. It stages a copy of `start-agent.ps1` into
+`C:\woodpecker\` so the task does not depend on this git checkout remaining where
+it is.
+
+The task's `RestartCount`/`RestartInterval` are **not** what keeps the agent
+alive — see [When the agent dies, nothing restarts
+it](#when-the-agent-dies-nothing-restarts-it). `start-agent.ps1` supervises the
+agent itself.
 
 By default the task uses an **S4U logon**: Windows issues an identity token for
 the account without authenticating a password, so nothing is stored anywhere and
@@ -108,7 +113,7 @@ To remove: `.\install-service.ps1 -Remove`.
 ## What `start-agent.ps1` fixes, and why it is not a list of `$env:` lines
 
 The local backend runs steps as children of the agent, so **the agent's
-environment is the build environment**. Three problems follow, each found by
+environment is the build environment**. Four problems follow, each found by
 measurement on a real machine:
 
 | Problem | Symptom if unfixed | Fix |
@@ -116,6 +121,7 @@ measurement on a real machine:
 | No MSVC environment | Cold `whisper-rs-sys` fails at exit 101: bindgen can't find `stdio.h`, emits degraded bindings, and it surfaces as a struct layout assertion (`12_usize - 16_usize`) far from the cause | Import `vcvars64.bat` |
 | `HOME`/`USERPROFILE` redirected to a throwaway `<workspace>\home` | rustup gets a blank profile with no `default_toolchain`. A repo without `rust-toolchain.toml` fails outright; one with it silently re-downloads a whole toolchain **every pipeline** | Pin `RUSTUP_HOME`, `CARGO_HOME` |
 | Git Bash on `PATH` | coreutils `link` shadows MSVC `link.exe`; every native build fails at link time | `image: powershell` in the workflow |
+| Agent starts before the tailnet is usable, then nothing restarts it | Agent exits 1 seconds into boot and **stays dead until a human notices** | Poll `:9000` until reachable, then supervise the agent in a loop |
 
 The launcher refuses to start if any of these is unsatisfied. That is the point:
 a preflight failure is one sentence, and the failure it replaces is a const-eval
@@ -155,10 +161,113 @@ Get-ChildItem C:\woodpecker\logs | Sort LastWriteTime -Desc | Select -First 1 | 
 
 The last ten run transcripts are kept in `C:\woodpecker\logs`.
 
+### `Stop-ScheduledTask` does not stop the agent
+
+It ends the launcher, but the agent is a **grandchild** of the task's process and
+survives as an orphan — still connected, still holding its agent id. Start the
+task again and two agents share one id, both eligible to claim work. Measured
+here after one Stop/Start cycle: two `woodpecker-agent.exe` processes with
+established connections to `:9000`.
+
+`start-agent.ps1` now kills orphans before launching, so a Stop/Start cycle
+self-corrects. To check by hand:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name = 'woodpecker-agent.exe'" |
+  Select-Object ProcessId, ParentProcessId, CreationDate
+```
+
+More than one row means a duplicate. Killing it needs a shell **in the same
+logon session or elevated** — the task's S4U token puts the agent out of reach of
+an ordinary interactive session, which fails with `Access is denied`:
+
+```powershell
+Stop-Process -Id <pid> -Force        # from an elevated PowerShell
+```
+
+This also matters when upgrading: an orphan keeps `woodpecker-agent.exe` locked
+while `install-agent.ps1` tries to replace it.
+
 `C:\woodpecker\agent.conf` holds the server-assigned agent id, so the agent is
 stateful across restarts. Its default path is `/etc/woodpecker/agent.conf`, which
 cannot exist on Windows; leaving it unset produces a recurring error on every
 start.
+
+## When the agent dies, nothing restarts it
+
+This cost several days of dead Windows CI once. Both of the mechanisms that look
+like they cover it do not:
+
+**The agent does not wait for the network.** `--connect-retry-count` /
+`--connect-retry-delay` only engage when the connection is *refused* (TCP RST).
+A dial that **times out** — which is exactly what an unready tailnet produces —
+skips the retry path and goes straight to a fatal error. Measured against a
+blackholed address with `WOODPECKER_CONNECT_RETRY_COUNT=20` and `_DELAY=5s`, the
+agent still died in 5 seconds with one `DeadlineExceeded` and no retry. Raising
+those knobs does nothing; only waiting before launch does.
+
+**Task Scheduler does not restart a non-zero exit.** It applies
+`RestartCount`/`RestartInterval` when it cannot launch the action or ends it
+itself — not when the process exits non-zero. Then it records the exit code in
+event 201 and logs event 102, *"successfully finished"*, because the task did run
+to completion. Confirmed across three boots: one launch each, no retries.
+
+Together those produced a silent outage. On the boot that caused it: OS up at
+09:32:51, task launched 09:33:06 (T+15s), but cold-boot contention delayed
+PowerShell so the agent's first and only connect attempt landed around **T+3min**
+— and still found no usable path to the server (fatal at 09:36:05). It exited 1
+and nothing started it again.
+
+T+3min is well past an ordinary Tailscale cold start (10–30s), which is the
+strongest evidence that the tunnel was not up *pre-logon at all* — see
+[unattended mode](#tailscale-must-survive-a-logout) below.
+
+`start-agent.ps1` therefore polls the server's `:9000` until it answers before
+launching the agent, and relaunches the agent whenever it exits. It also sets
+`WOODPECKER_RETRY_TIMEOUT=0` so a *lost* connection retries forever instead of
+giving up after the default 2 minutes.
+
+### Diagnosing it
+
+```powershell
+# "Ready" + a non-zero last result = dead, not idle. 0x41301 = healthy.
+Get-ScheduledTaskInfo -TaskName WoodpeckerAgent
+
+# Authoritative launch history — look for one launch per boot and no retries.
+Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TaskScheduler/Operational'} |
+  Where-Object { $_.Message -match 'WoodpeckerAgent' } |
+  Select-Object -First 20 TimeCreated, Id
+
+# Is the server actually reachable from this machine right now?
+Test-NetConnection 100.120.41.12 -Port 9000
+```
+
+A healthy agent holds established connections to the server and answers its own
+healthcheck:
+
+```powershell
+Get-NetTCPConnection -RemoteAddress 100.120.41.12 -RemotePort 9000
+Invoke-WebRequest http://127.0.0.1:3000/healthz -UseBasicParsing
+```
+
+### Tailscale must survive a logout
+
+By default Tailscale on Windows is **not** in unattended mode: the tunnel follows
+the GUI user's session. A machine sitting at the login screen after a reboot
+therefore has no tailnet, so the agent cannot reach `:9000` and waits — CI comes
+up when a human logs in, not at boot.
+
+```powershell
+& 'C:\Program Files\Tailscale\tailscale.exe' up --unattended
+```
+
+The trade-off is exactly what it says: the machine stays joined to the tailnet
+while nobody is logged in. On a dedicated build box that is the point. On a
+personal desktop it is a posture decision worth making deliberately.
+
+Without it the agent still self-heals — the wait loop picks it up whenever the
+tunnel appears — so this is the difference between *"CI is up at boot"* and *"CI
+is up once I log in"*, not between working and broken.
 
 ## Upgrading
 

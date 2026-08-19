@@ -4,7 +4,12 @@
 
 .DESCRIPTION
     Creates a task that starts the agent at boot, before and independently of
-    any interactive logon, and restarts it if it dies.
+    any interactive logon.
+
+    Keeping the agent alive is start-agent.ps1's job, not this task's. Task
+    Scheduler does not restart an action that exits non-zero (see the settings
+    block below), so the launcher waits for the server and supervises the agent
+    in a loop instead.
 
     Why a Scheduled Task rather than a Windows service:
     the agent is a console application. Making it a true service needs a
@@ -116,6 +121,18 @@ $settings = New-ScheduledTaskSettingsSet `
 # ExecutionTimeLimit 0 = run indefinitely. The default is 3 days, after which
 # Windows would kill a perfectly healthy agent and leave no obvious trace.
 # MultipleInstances IgnoreNew stops a restart from racing a running agent.
+#
+# RestartCount/RestartInterval are NOT what keeps the agent alive, despite how
+# they read. Task Scheduler applies them when it cannot launch the action or
+# ends it itself -- NOT when the launched process exits non-zero. In that case
+# the engine records the exit code (event 201) and then logs event 102,
+# "successfully finished", because the task did run to completion. Measured on
+# this deployment across three boots: the agent exited 1 within seconds each
+# time and was never restarted, leaving CI dead for days.
+#
+# Staying alive is therefore start-agent.ps1's job -- it waits for the server to
+# be reachable before launching the agent and relaunches it whenever it exits.
+# These two settings are kept only for the launch-failure case they do cover.
 
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
