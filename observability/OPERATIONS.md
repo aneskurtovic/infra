@@ -17,6 +17,12 @@ notably Ludo's backend Serilog files, which remain that application's own
 long-lived log path. This stack is for "what happened to this service recently"
 triage across the whole box, not for deep single-application forensics.
 
+Since 2026-08-22 it also ships the **systemd journal**, filtered to the
+platform's own units — today `platform-backup.service` and
+`platform-backup-maintenance.service`. Nothing else from the journal is
+collected: it is 2.4 GB with no cap (`BACKLOG.md` **P8**), and sshd/kernel/
+fail2ban lines earn nothing in Grafana that `journalctl` does not already give.
+
 Retention is **7 days**, enforced by Loki's compactor. There is no archive.
 
 ## Reaching Grafana
@@ -81,6 +87,12 @@ component:
 | `portfolio` | `portfolio` | `portfolio` |
 | `helifilm` | `helifilm` | `helifilm` |
 | `caddy`, `woodpecker-server`, `uptime-kuma`, … | `platform` | container name |
+| *(journal)* `platform-backup.service` | `platform` | `platform-backup` |
+
+The journal rows deliberately use the same two labels as containers, so a unit
+and a container are queried identically. They carry no `container` or `stream`
+label — which is also how you tell them apart:
+`{stack="platform", container=""}` is everything that came from systemd.
 
 **Always scope by `stack`.** Prod and stage deliberately share `service` names,
 so a bare `{service="backend"}` spans both — that is the trap this schema exists
@@ -103,6 +115,35 @@ topk(10, sum by (container) (count_over_time({stack=~".+"}[1h])))
 # a bare `{stack=""}` is an error, not an empty result.
 sum by (container) (count_over_time({container=~".+", stack=""}[1h]))
 ```
+
+## Verifying journal collection
+
+`alloy validate` will pass whether or not journal collection actually works —
+it checks the config, not the collector's capabilities or the host's journald
+mode. Two things have to be true on the box, and both fail *silently*:
+
+```bash
+# 1. The journal is persistent. If journald is in volatile mode its files are in
+#    /run/log/journal, the bind mount creates an empty /var/log/journal, and the
+#    source reads nothing while every container reports healthy.
+journalctl --header | head -3
+ls -d /var/log/journal/*
+
+# 2. Lines actually arrive. Emit one under a collected unit's identifier and
+#    look for it — this is the only end-to-end proof.
+systemd-cat -t platform-backup echo "journal collection test $(date -u +%FT%TZ)"
+```
+
+Then, in Grafana (allow ~15 s):
+
+```logql
+{stack="platform", service="platform-backup"}
+```
+
+If the query is empty and step 1 was fine, check `docker logs alloy` for
+`loki.source.journal` errors. Alloy needs journal support compiled in; the
+official image has it, a rebuilt or substituted one may not, and that shows up
+as a component error at start rather than as a bad config.
 
 ## Adding a tenant
 
@@ -171,6 +212,14 @@ was removed — see its comment.
 Grafana holds dashboards, users, and API keys; that is the only state worth
 keeping. **Loki's data is deliberately not backed up** — it is 7-day triage data,
 and restoring stale logs into a live index causes more confusion than it solves.
+The platform backup stack ([`../backup/`](../backup)) makes the same split for
+the same reason: `grafana-data` is in the nightly off-site snapshot, `loki-data`
+is not.
+
+The command below is the manual, immediate version — the right thing before an
+upgrade. It writes into the working directory, so run it somewhere with room and
+copy the archive off the box; an archive on the disk you are protecting against
+is not a backup.
 
 ```bash
 docker run --rm -v grafana-data:/data:ro -v "$PWD:/backup" alpine \

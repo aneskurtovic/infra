@@ -5,7 +5,9 @@
 #
 #   loki    — log storage, queried by Grafana and by tenants' own admin UIs
 #   alloy   — the single collector; discovers ALL containers over a read-only
-#             Docker socket and labels each stream with `stack` + `service`
+#             Docker socket and labels each stream with `stack` + `service`.
+#             Also reads the systemd journal, filtered to the platform's own
+#             units, so a failed timer is queryable instead of silent.
 #   grafana — the query UI, reached only through the edge proxy
 #
 # Isolation between tenants is by LABEL (`stack="ludo-prod"`, `stack="helifilm"`,
@@ -130,6 +132,18 @@ services:
     volumes:
       - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # The systemd journal, read-only — added 2026-08-22 so the platform's own
+      # timers (backup/) are visible in Grafana. config.alloy keeps only
+      # platform-backup*.service from it; the mount is the whole journal because
+      # the filter belongs where it can be reviewed, not in a bind path.
+      #
+      # If /var/log/journal does not exist on the host, Docker CREATES IT EMPTY
+      # and the collector reads nothing while reporting healthy. Verify on the
+      # box before trusting the query:  journalctl --header | head -3
+      - /var/log/journal:/var/log/journal:ro
+      # journald identifies its per-boot directories by machine ID; without this
+      # the collector can fail to locate the local machine's journal.
+      - /etc/machine-id:/etc/machine-id:ro
       - alloy-data:/var/lib/alloy/data
     networks:
       - edge

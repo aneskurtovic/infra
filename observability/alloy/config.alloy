@@ -138,6 +138,64 @@ loki.source.docker "containers" {
 	forward_to = [loki.write.platform.receiver]
 }
 
+// ---------------------------------------------------------------------------
+// The systemd journal — the platform's OWN units, and nothing else.
+// ---------------------------------------------------------------------------
+//
+// Added 2026-08-22 with backup/. BACKLOG.md P1 described a systemd timer whose
+// "failures land in the journal Alloy already ships to Loki". Alloy shipped no
+// journal at all — this file had a loki.source.docker and nothing else — so a
+// timer that failed at 05:30 would have written to the journal and stopped
+// there. Container logs were visible in Grafana; everything systemd does on
+// this box was not. That is precisely the silence P1 exists to end, so the
+// backup stack could not be considered observable without this block.
+//
+// SCOPED TO A KEEP LIST ON PURPOSE. The journal on this box is 2.4 GB and has
+// no SystemMaxUse cap (BACKLOG.md P8); shipping all of it would multiply Loki's
+// ingest for no triage value, and sshd/kernel/fail2ban lines are already
+// available over SSH to anyone who can read them. Add a unit here when the
+// platform gains one worth watching from Grafana — deliberately, one at a time.
+loki.relabel "journal" {
+	// Empty on purpose: this component exists only to export `.rules` to the
+	// journal source below. It forwards nothing itself.
+	forward_to = []
+
+	// Drop everything that is not a platform unit, FIRST, so the rules after it
+	// only ever run on the handful of lines being kept.
+	rule {
+		source_labels = ["__journal__systemd_unit"]
+		regex         = "platform-backup(-maintenance)?\\.service"
+		action        = "keep"
+	}
+
+	// Same two-label scheme the container pipeline uses, so a journal stream and
+	// a container stream are queried the same way:
+	//   {stack="platform", service="platform-backup"}
+	rule {
+		source_labels = ["__journal__systemd_unit"]
+		regex         = "(.*)\\.service"
+		target_label  = "service"
+		replacement   = "$1"
+	}
+}
+
+loki.source.journal "platform_units" {
+	// Persistent journal directory. If this box ever runs journald in volatile
+	// mode the path is /run/log/journal instead, the bind mount silently creates
+	// an empty directory, and this source reads NOTHING while everything still
+	// reports healthy. Check on the box, not here:
+	//   ls -d /var/log/journal/* && journalctl --header | head -3
+	path = "/var/log/journal"
+
+	// 24h, up from the 7h default: a nightly unit must still be collected after
+	// a collector restart that happens to fall between two runs.
+	max_age = "24h"
+
+	relabel_rules = loki.relabel.journal.rules
+	labels        = {stack = "platform"}
+	forward_to    = [loki.write.platform.receiver]
+}
+
 loki.write "platform" {
 	endpoint {
 		// Container name on the shared `edge` network. Loki has no auth, so
