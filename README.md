@@ -148,7 +148,7 @@ observability/
   docker-compose.yml   # Loki + Alloy + Grafana (external data volumes)
   loki/loki-config.yml # storage, 7-day retention, ingestion limits
   alloy/config.alloy   # docker discovery + the stack/service label scheme
-  grafana/provisioning # Loki datasource, committed rather than click-configured
+  grafana/provisioning # Loki datasource + alert rules, committed not clicked
   .env.example         # Grafana root URL + bootstrap admin
   MIGRATION.md         # move off Ludo's two Loki/Promtail pairs
   OPERATIONS.md        # steady-state runbook: queries, onboarding a tenant, backup

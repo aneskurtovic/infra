@@ -176,6 +176,24 @@ fi
 
 install -d -m 700 "$STAGING" "$STAGING/volumes" "$STAGING/secrets" "$HANDOFF"
 
+# ---------------------------------------------------------------------- disk --
+# Not this script's problem to solve, and reported anyway. Weekly reclamation
+# (platform-docker-cleanup) was the only thing on this box producing a disk
+# reading, and weekly is a poor sampling interval against ~890 MB/day of CI
+# churn. This runs every night and is already disk-aware — it stages ~300 MB —
+# so it is the cheapest place to get a daily number.
+#
+# The Grafana rule `platform-disk-high` keys on the literal string "WARN: disk".
+# Keep that prefix stable if you reword the message.
+DISK_WARN_PCT="${BACKUP_DISK_WARN_PCT:-85}"
+disk_pct=$(df --output=pcent "$BACKUP_ROOT" | tail -1 | tr -dc '0-9')
+disk_free=$(df -h --output=avail "$BACKUP_ROOT" | tail -1 | tr -d ' ')
+if (( disk_pct > DISK_WARN_PCT )); then
+  warn "disk: ${disk_pct}% used, ${disk_free} free (threshold ${DISK_WARN_PCT}%)"
+else
+  log "disk: ${disk_pct}% used, ${disk_free} free"
+fi
+
 # ------------------------------------------------------------------- volumes --
 for target in "${TARGETS[@]}"; do
   IFS=: read -r volume container mode <<<"$target"

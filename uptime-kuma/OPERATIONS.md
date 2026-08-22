@@ -70,6 +70,20 @@ days and keep certificate validation on for every HTTPS monitor.
 
 ## Notifications
 
+> **This is the single most overdue thing on the box.** Kuma's own log records
+> production failing on 5 and 10 August and **twice in 48 hours on 17–18 August**
+> — a timeout and three 5xx — and nobody was told, because no notification channel
+> is attached. Every one of those lines reports `Resend Interval: 0`. A dashboard
+> that records outages and cannot report them is worse than no dashboard, because
+> it looks like coverage (`BACKLOG.md` **P3**).
+>
+> Nothing in the infra repo can fix this. Monitor and notification definitions
+> live in Kuma's root-only SQLite database with no supported declarative format,
+> so it is UI work on the box, and it stays undone until someone does it. Grafana
+> now alerts on the platform's own timers (`observability/OPERATIONS.md`
+> § Alerting) — that covers "the backup failed", not "the site is down". Kuma is
+> the only thing that probes from outside the application.
+
 Notification credentials live only in Kuma's data volume — **never** put webhook URLs,
 bot tokens, SMTP passwords, or chat IDs in this repo or any `.env`. In **Settings →
 Notifications**, add a provider (Discord webhook, SMTP, Telegram bot, or Slack webhook),

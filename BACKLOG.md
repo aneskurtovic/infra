@@ -274,6 +274,30 @@ be removed deliberately.
 
 ## P3 — Nothing alerts. Production failed twice and nobody was told. · **High**
 
+> **Status 2026-08-22 — the Grafana half is written; the Kuma half cannot be
+> done from a repo.** `observability/grafana/provisioning/alerting/` now holds
+> four rules, a contact point and a two-tier notification policy, committed the
+> same way `loki.yml` is. That also clears the error Grafana logged at every
+> start: `can't read alerting provisioning files from directory`.
+>
+> The rules are: backup did not complete in 26h (critical), backup logged
+> warnings (warning), restic reported a fatal error in 7d (critical), disk above
+> 85% (critical). Four, not fourteen — this item's own "Not this" says start
+> with "production is down" and "the backup failed", and Kuma owns the first.
+>
+> **The dependency note in this item is now partly wrong, in a good way.** It
+> says "with no metrics datasource (P4), the only signal Grafana can alert on is
+> Loki log volume." Since the journal is shipped, Grafana can alert on the
+> platform's own timers by name — not log *volume*, but the presence or absence
+> of specific lines. That is enough for "the backup failed" and, because both
+> platform timers now log disk, enough for "the disk is filling". It is still
+> not enough for CPU, memory, swap, or certificate expiry: **P4** owns those.
+>
+> **Kuma still notifies nobody**, and that is the half that would have caught
+> the Aug 17/18 502s. It is click-ops in a UI against a root-only SQLite
+> database; `uptime-kuma/OPERATIONS.md` § Notifications says what to do. Nothing
+> in this repo can do it, and nothing in this repo should pretend it did.
+
 **Problem.** The box has monitoring that records failures and no path from a
 recorded failure to a human. This is worse than having no monitoring, because it
 looks like coverage.
@@ -314,8 +338,18 @@ Note the dependency: with no metrics datasource (**P4**), the only signal Grafan
 can currently alert on is Loki log volume. Kuma is the near-term alerting path;
 Grafana becomes useful for alerts once P4 lands.
 
-**Done when.** A deliberately failed monitor produces a notification off-box
-within a stated window, and the Aug-17-style 502 would now reach someone.
+**Done when.**
+
+| # | Check | State |
+| --- | --- | --- |
+| 1 | Grafana alert rules committed rather than clicked | ✅ written — four rules, contact point, policy |
+| 2 | A deliberately failed check produces a notification off-box within a stated window | **open** — the procedure is in `observability/OPERATIONS.md` § "Verify it, end to end, once"; ~15 min for the disk rule (5 m evaluation + 10 m `for`) |
+| 3 | Kuma has a notification channel and it fires | **open** — UI-only, on the box |
+| 4 | The Aug-17-style 502 would now reach someone | **open** — that path is Kuma's, so it depends entirely on 3 |
+
+Item 4 is the one this item was opened for. Items 1 and 2 make the *backup*
+failing loud, which is new and which **P1** needed. They do not make production
+being down loud. Do not read a green item 1 as coverage.
 
 **Not this.** Not building a paging rotation. Not alerting on everything — start
 with "production is down" and "the backup failed."

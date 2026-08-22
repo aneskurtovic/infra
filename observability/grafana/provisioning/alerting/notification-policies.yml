@@ -1,0 +1,27 @@
+# How alerts are grouped and how often they repeat.
+#
+# Two routes, and the split is the point. A critical alert repeating every four
+# hours is pressure to fix it. A warning repeating every four hours is how an
+# alert channel becomes something people mute — and a muted channel is the state
+# P3 already describes, reached by a different road.
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: platform-notifications
+    group_by: ['alertname']
+    # Long enough to batch a burst, short enough that the first notification is
+    # not itself the delay.
+    group_wait: 1m
+    group_interval: 10m
+    repeat_interval: 4h
+    routes:
+      # A stale tenant hand-off is real and worth knowing about; it is also
+      # someone else's cron, and it can stay broken for a week. Once a day.
+      - receiver: platform-notifications
+        object_matchers:
+          - ['severity', '=', 'warning']
+        group_by: ['alertname']
+        group_wait: 5m
+        group_interval: 30m
+        repeat_interval: 24h

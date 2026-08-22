@@ -1,0 +1,307 @@
+# Platform alert rules, committed rather than clicked — the same reasoning as
+# datasources/loki.yml next door, and the direct answer to the error Grafana has
+# been logging at every start:
+#
+#   logger=provisioning.alerting level=error msg="can't read alerting
+#   provisioning files from directory" path=/etc/grafana/provisioning/alerting
+#
+# Four rules, and no more. BACKLOG.md P3 says it outright: "Not alerting on
+# everything — start with 'production is down' and 'the backup failed.'"
+# Production-is-down belongs to Uptime Kuma, which probes from outside the
+# application; everything here is the half Kuma cannot see.
+#
+# ---------------------------------------------------------------------------
+# THE THING TO UNDERSTAND BEFORE EDITING ANY OF THESE
+# ---------------------------------------------------------------------------
+#
+# Every rule below queries LOGS, not metrics. There is no metrics backend yet
+# (P4), so "did the backup run" has to be asked as "does a success line exist".
+# That inverts how a threshold normally behaves, and getting it wrong produces
+# an alert that silently never fires:
+#
+#   A LogQL query matching NO lines returns NO SERIES — not zero.
+#
+# So `count_over_time(...) == 0` can never be true, because there is nothing to
+# compare. The absence of a line arrives as **No Data**, which is why the rule
+# that matters most has `noDataState: Alerting`. Write it as a `< 1` threshold
+# and let No Data do the work; do not "fix" it into `== 0`.
+#
+# The corollary: a broken Alloy, a broken Loki, or a Grafana that cannot reach
+# either also produces No Data, and will page. That is correct. Losing the
+# ability to know whether the backup ran is not meaningfully better than the
+# backup not running.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS DELIBERATELY NOT HERE
+# ---------------------------------------------------------------------------
+#
+# "The weekly maintenance run stopped happening" has no rule, and cannot have
+# one. Loki keeps 7 days; the job runs every 7 days. An absence window wide
+# enough to be meaningful is wider than the data, and one narrow enough to fit
+# straddles the run's own RandomizedDelaySec. It is covered transitively
+# instead: a repository that has become unreachable or corrupt fails the NIGHTLY
+# backup too, and rule 1 catches that within 26 hours.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: platform
+    folder: Platform
+    # Five minutes is frequent enough for a nightly job and cheap: four instant
+    # queries over a 7-day-max window against a 14 MB Loki.
+    interval: 5m
+    rules:
+
+      # ---------------------------------------------------------------------
+      # 1. The one that matters. Everything the platform owns depends on this
+      #    being true, and before backup/ existed it was never true at all.
+      # ---------------------------------------------------------------------
+      - uid: platform-backup-not-completed
+        title: Platform backup has not completed in 26h
+        condition: C
+        for: 10m
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 93600
+              to: 0
+            datasourceUid: platform-loki
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: platform-loki
+              # 26h, not 24h: the timer fires at 05:30 with up to 5 minutes of
+              # RandomizedDelaySec, and a slow first snapshot can take an hour.
+              # A 24h window would page every morning for a backup that is
+              # merely running late.
+              expr: 'sum(count_over_time({stack="platform", service="platform-backup"} |= "platform backup complete" [26h]))'
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+        # See the header. Absence of the success line is the whole signal.
+        noDataState: Alerting
+        execErrState: Alerting
+        labels:
+          severity: critical
+        annotations:
+          summary: No "platform backup complete" line in the last 26 hours.
+          description: >-
+            The nightly restic snapshot did not finish, or the log path from the
+            journal to Loki is broken. Either way the platform is running
+            without a verified backup. Check `systemctl status
+            platform-backup.service` and `journalctl -u platform-backup -n 100`
+            on the box; the runbook is backup/OPERATIONS.md.
+
+      # ---------------------------------------------------------------------
+      # 2. The backup ran and told you something. Usually a tenant.
+      # ---------------------------------------------------------------------
+      - uid: platform-backup-warnings
+        title: Platform backup reported warnings
+        condition: C
+        for: 15m
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 93600
+              to: 0
+            datasourceUid: platform-loki
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: platform-loki
+              # Excludes "WARN: disk", which rule 4 owns — the same line should
+              # not produce two notifications with two different severities.
+              expr: 'sum(count_over_time({stack="platform", service=~"platform-backup.*"} |= "WARN" != "WARN: disk" [26h]))'
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+        # No warnings is the normal state and produces no series. That is the
+        # healthy case here, not a failure — the exact opposite of rule 1.
+        noDataState: OK
+        execErrState: Alerting
+        labels:
+          severity: warning
+        annotations:
+          summary: The backup completed but logged at least one warning.
+          description: >-
+            Most often a tenant whose hand-off dump has gone stale, or a secret
+            file that is no longer readable and is therefore no longer in the
+            snapshot. The backup itself succeeded. Query
+            {stack="platform", service=~"platform-backup.*"} |= "WARN".
+
+      # ---------------------------------------------------------------------
+      # 3. The repository itself is damaged. This is the one where "the backup
+      #    ran fine every night" and "you have no backup" are both true.
+      # ---------------------------------------------------------------------
+      - uid: platform-backup-repository-error
+        title: Platform backup repository check failed
+        condition: C
+        for: 5m
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 604800
+              to: 0
+            datasourceUid: platform-loki
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: platform-loki
+              # "fatal" specifically, and case-insensitively: it catches both
+              # the scripts' own `FATAL:` and restic's `Fatal:` prefix. Matching
+              # "error" instead would fire on restic's own success line, which
+              # reads "no errors were found".
+              expr: 'sum(count_over_time({stack="platform", service=~"platform-backup.*"} |~ "(?i)fatal" [7d]))'
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+        noDataState: OK
+        execErrState: Alerting
+        labels:
+          severity: critical
+        annotations:
+          summary: restic reported a fatal error in the last 7 days.
+          description: >-
+            Either the repository is unreachable, or `restic check` found
+            damage. Do NOT delete snapshots to make it pass — read
+            backup/OPERATIONS.md "When check fails" first; `restic repair` may
+            recover what is recoverable, and if the backend has lost data you
+            want to know that now rather than during a restore.
+
+      # ---------------------------------------------------------------------
+      # 4. Disk. The failure the backlog had to find with an SSH and a df.
+      # ---------------------------------------------------------------------
+      - uid: platform-disk-high
+        title: Platform disk above its threshold
+        condition: C
+        for: 10m
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 93600
+              to: 0
+            datasourceUid: platform-loki
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: platform-loki
+              # Both platform timers emit this line, and that pairing is what
+              # makes the window 26h instead of 7d: reclamation is weekly, but
+              # the backup checks disk every night on its way past. The 85%
+              # threshold lives in the scripts, in one place, not here.
+              expr: 'sum(count_over_time({stack="platform", service=~"platform-(backup|docker-cleanup)"} |= "WARN: disk" [26h]))'
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+        noDataState: OK
+        execErrState: Alerting
+        labels:
+          severity: critical
+        annotations:
+          summary: A platform timer reported disk usage above 85%.
+          description: >-
+            Build-cache churn is roughly 890 MB/day on this box and weekly
+            reclamation has stopped keeping up, or something else is growing.
+            Start with `docker system df` and
+            `journalctl -u platform-docker-cleanup -n 50`. This is a log-derived
+            alert, not a metric — BACKLOG.md P4 is what turns disk into a graph.

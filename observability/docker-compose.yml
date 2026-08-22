@@ -180,8 +180,10 @@ services:
     restart: unless-stopped
     volumes:
       - grafana-data:/var/lib/grafana
-      # Datasource provisioned from the repo so a fresh install is useful
-      # immediately — no click-ops, and the config is reviewable in git.
+      # Datasource AND alert rules provisioned from the repo so a fresh install
+      # is useful immediately — no click-ops, and the config is reviewable in
+      # git. The whole provisioning tree is mounted, so adding a subdirectory
+      # here needs no compose change; `alerting/` arrived that way.
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     networks:
       - edge
@@ -203,6 +205,16 @@ services:
       GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:?GRAFANA_ROOT_URL is required}
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is required}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      # Consumed by grafana/provisioning/alerting/contact-points.yml via
+      # Grafana's `$__env{}` provisioning syntax. Guarded like the rest: an
+      # alert rule that evaluates correctly and notifies nobody is the failure
+      # BACKLOG.md P3 is about, so a missing value fails `up` rather than
+      # producing a Grafana that looks fine.
+      #
+      # NOTE FOR AN EXISTING BOX: this variable is NEW as of 2026-08-22. The
+      # next `compose up` will refuse until it is in
+      # /opt/observability/observability.env.
+      GRAFANA_ALERT_WEBHOOK_URL: ${GRAFANA_ALERT_WEBHOOK_URL:?GRAFANA_ALERT_WEBHOOK_URL is required — see observability/.env.example}
       # This is a single-operator dashboard behind a second auth gate. Nobody
       # signs themselves up, and nothing is readable without logging in.
       GF_USERS_ALLOW_SIGN_UP: "false"

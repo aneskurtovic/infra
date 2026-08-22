@@ -1,0 +1,38 @@
+# Where an alert goes. Committed like the datasource next door, so a rebuilt
+# Grafana notifies the same place without anyone remembering to click it back.
+#
+# THE URL IS NOT IN THIS FILE. It arrives as an environment variable, which the
+# compose file marks `:?required` — so a missing value fails `compose up` loudly
+# instead of starting a Grafana whose alerts evaluate correctly and reach
+# nobody. That failure mode is exactly what BACKLOG.md P3 is about: monitoring
+# that records failures and has no path to a human "is worse than having no
+# monitoring, because it looks like coverage."
+#
+# VERIFY THE INTERPOLATION ONCE, on this Grafana version, before believing any
+# of this works — `$__env{}` is Grafana's documented provisioning syntax, and
+# "documented" is not the same as "confirmed on 13.1.1 with this file". Open
+# Alerting -> Contact points and check the URL shows the real value, then use
+# the contact point's **Test** button and watch it arrive. If it interpolated
+# literally, delete this file and create the contact point once in the UI: it
+# lives in grafana-data, which is now backed up (backup/), so it survives a
+# rebuild. Keep rules.yml and notification-policies.yml provisioned either way.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: platform-notifications
+    receivers:
+      - uid: platform-webhook
+        # `webhook` is the neutral choice: it posts Grafana's own JSON payload
+        # to any URL, so the platform does not care whether the other end is
+        # Discord, a Telegram bridge, ntfy, or a script. Swapping this to
+        # `discord`, `telegram` or `slack` gives a nicer-looking message at the
+        # cost of tying this file to one vendor — worth doing, and a deliberate
+        # choice rather than the default.
+        type: webhook
+        settings:
+          url: $__env{GRAFANA_ALERT_WEBHOOK_URL}
+        # Send the recovery too. An alert channel that only ever says "broken"
+        # trains you to ignore it, because nothing ever says "fixed" and you
+        # stop believing either message.
+        disableResolveMessage: false

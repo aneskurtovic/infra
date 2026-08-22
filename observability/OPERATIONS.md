@@ -156,6 +156,82 @@ If the query is empty and step 1 was fine, check `docker logs alloy` for
 official image has it, a rebuilt or substituted one may not, and that shows up
 as a component error at start rather than as a bad config.
 
+## Alerting
+
+Four rules, provisioned from `grafana/provisioning/alerting/` the same way the
+datasource is — committed, not clicked, so a rebuilt Grafana notifies the same
+place without anyone remembering. They also fix the error Grafana logged at
+every start: `can't read alerting provisioning files from directory`.
+
+| Rule | Fires when | Severity |
+| --- | --- | --- |
+| Backup has not completed in 26h | No `platform backup complete` line — including because Loki or Alloy is broken | critical |
+| Backup reported warnings | A stale tenant hand-off, an unreadable secret file | warning |
+| Backup repository check failed | `Fatal` from restic or the scripts in 7 days | critical |
+| Disk above its threshold | Either platform timer logged `WARN: disk` | critical |
+
+**The thing to understand before editing them.** These query *logs*, not metrics
+— there is no metrics backend yet (**P4**), so "did the backup run" is asked as
+"does a success line exist". A LogQL query matching no lines returns **no
+series**, not zero, so `count_over_time(...) == 0` can never be true. Absence
+arrives as **No Data**, which is why the rule that matters most has
+`noDataState: Alerting` and a `< 1` threshold. Do not "fix" it into `== 0`; that
+is an alert that silently never fires.
+
+Two consequences worth stating rather than discovering:
+
+- A broken Alloy, Loki, or Grafana-to-Loki path also produces No Data and will
+  notify. That is correct — losing the ability to know whether the backup ran is
+  not meaningfully better than the backup not running.
+- **"The weekly maintenance run stopped happening" has no rule and cannot have
+  one.** Loki keeps 7 days; the job runs every 7 days. Any absence window wide
+  enough to mean something is wider than the data. It is covered transitively: a
+  repository that has become unreachable fails the *nightly* backup too, and
+  rule 1 catches that within 26 hours.
+
+### Where notifications go
+
+`GRAFANA_ALERT_WEBHOOK_URL`, from `/opt/observability/observability.env`. The URL
+is a credential and never enters the repo; the file that references it does.
+It is **required** — a `compose up` without it fails, deliberately, because
+Grafana starting with rules that evaluate correctly and reach nobody is the
+state `BACKLOG.md` **P3** calls "worse than having no monitoring, because it
+looks like coverage."
+
+This is a *second* destination, not a replacement for Uptime Kuma's own
+notifications. Kuma probes the sites from outside the applications and has to be
+able to tell you the box is down — which is exactly when Grafana cannot.
+
+### Verify it, end to end, once
+
+Provisioning that loads is not the same as a notification that arrives, and the
+whole point of this item is that nobody had checked.
+
+```bash
+# 1. The contact point resolved its URL. If it shows the literal
+#    "$__env{GRAFANA_ALERT_WEBHOOK_URL}", the interpolation did not happen on
+#    this Grafana version — see the note at the top of contact-points.yml.
+#    Alerting -> Contact points -> platform-notifications -> Test
+
+# 2. A rule actually fires. This writes a real matching line into the journal;
+#    Alloy ships it, and platform-disk-high should notify within ~15 minutes
+#    (5m evaluation + 10m `for`).
+systemd-cat -t platform-backup echo "WARN: disk: 99% used, 0.1G free (threshold 85%)"
+
+# 3. Watch it arrive, then watch it RESOLVE 26h later — or don't wait, and just
+#    confirm the alert appears under Alerting -> Alert rules -> Platform.
+```
+
+Do step 2 knowing what it does: it is a genuine false alarm, and it is the only
+honest way to test an alert path.
+
+### Editing and silencing
+
+The files are the source of truth; provisioned rules show read-only in the UI, so
+a change made there is lost on the next container recreate. Edit the file and
+restart Grafana. Silences are runtime state and *are* set in the UI — they live
+in `grafana-data`, which the platform backup covers.
+
 ## Adding a tenant
 
 Onboarding is one rule and a reload — never a new collector.
