@@ -1,0 +1,20 @@
+[Unit]
+Description=Platform backup maintenance — prune, then verify the repository
+Documentation=https://github.com/aneskurtovic/infra/blob/main/backup/OPERATIONS.md
+After=network-online.target
+Wants=network-online.target
+# No Requires=docker.service: this one never touches a container. It must still
+# be able to verify the repository on a box whose Docker daemon is broken —
+# which is exactly the box whose backups you are about to need.
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/backups/backup.env
+ExecStart=/opt/backups/bin/maintenance.sh
+SyslogIdentifier=platform-backup-maintenance
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=4h
+
+[Install]
+WantedBy=multi-user.target

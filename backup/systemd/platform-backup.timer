@@ -1,0 +1,21 @@
+[Unit]
+Description=Nightly platform backup
+Documentation=https://github.com/aneskurtovic/infra/blob/main/backup/OPERATIONS.md
+
+[Timer]
+# 05:30, and the time is chosen against the other things already on this box:
+#   04:00  ludo-backup.timer      — the tenant's Postgres dump. Running before it
+#                                   would ship yesterday's dump every night.
+#   05:00  ludo-docker-cleanup    — Sundays only; `docker builder prune -af` is
+#                                   IO-heavy and there is no reason to overlap.
+# See BACKLOG.md P2 for both. If either moves, move this.
+OnCalendar=*-*-* 05:30:00
+RandomizedDelaySec=5m
+# A box that was off or rebooting at 05:30 still backs up when it comes back,
+# instead of silently skipping a day. This matters more than the tidiness of a
+# fixed schedule: the days a box is unhealthy are the days you want a snapshot.
+Persistent=true
+Unit=platform-backup.service
+
+[Install]
+WantedBy=timers.target

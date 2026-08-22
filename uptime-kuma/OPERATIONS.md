@@ -89,8 +89,16 @@ certificate-expiry present, and end the window if it didn't auto-expire.
 
 Kuma v2 removed JSON backup/restore — back up the Docker **volume**. It holds monitor
 history, admin credentials, notification secrets, and status-page config, so store
-archives mode `600` off-host. Take a consistent **offline** backup before every upgrade
-and after material monitor/notification changes:
+archives mode `600` off-host.
+
+> `uptime-kuma-data` is one of the volumes the platform backup stack
+> ([`../backup/`](../backup)) snapshots off-site nightly — once that stack is
+> installed on the box, which as of 2026-08-22 it is not (`BACKLOG.md` **P1**).
+> The manual procedure below stays the pre-upgrade move either way: it is
+> immediate and needs neither the network nor the repository password.
+
+Take a consistent **offline** backup before every upgrade and after material
+monitor/notification changes:
 
 ```bash
 # /opt/backups does not exist on a box where this has never been run — and as of

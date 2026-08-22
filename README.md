@@ -41,7 +41,9 @@ flowchart LR
       WS --- edge
       APPS[deployed apps]
       ALLOY[Alloy · ro docker.sock]
+      BKP[platform-backup.timer · restic]
     end
+    OFF[(off-site repository · encrypted)]
     R1 & R2 -- webhook --> WS
     CADDY -- proxies UI --> WS
     CADDY -- proxies UI --> GRAF
@@ -49,6 +51,7 @@ flowchart LR
     WA -- rsync + atomic symlink over SSH --> APPS
     ALLOY -- scrapes every container --> LOKI
     GRAF -- queries --> LOKI
+    BKP -- nightly snapshot --> OFF
 ```
 
 - **`woodpecker-server`** — OAuth, webhooks, scheduling, UI. Reachable only
@@ -84,11 +87,28 @@ flowchart LR
   and flip an atomic `current` symlink, keeping the last few for instant rollback.
 - **Pinned everything.** Server and agent images are version-pinned and upgraded
   together.
+- **Backups are substrate, not a favour.** The platform owns the off-site
+  repository, the schedule, and the restore drill; a tenant owns producing a
+  consistent dump and dropping it in the hand-off directory. Neither side has to
+  learn the other's storage. And a backup nobody has restored from is a claim,
+  not a capability — `backup/OPERATIONS.md` carries the dated drill log that
+  settles which one it is.
 - **Committed is not deployed.** This repo describes the platform's *intended*
   shape; the box describes its actual one, and they drift. A migration runbook
   can sit here fully written for weeks before anyone runs it. Every `MIGRATION.md`
   therefore opens by having you check the box, and any change made on the strength
   of "the repo says X" is a guess until `docker ps` agrees.
+
+## Recovering from nothing
+
+[`DISASTER-RECOVERY.md`](DISASTER-RECOVERY.md) is the box-is-gone procedure:
+prove the backup repository, rebuild the host, restore secrets, restore volumes,
+bring the stacks up in order, then move DNS. It opens by naming the four things
+that must live *off* this box — the repository URL, its password, the storage
+credentials, and registrar access — because none of them can be recovered from
+the backup they unlock.
+
+It has never been executed, and it says so. Neither has the restore drill.
 
 ## What's next
 
@@ -103,6 +123,16 @@ that settles each one — so a later review doesn't reopen a closed question.
 
 ```
 BACKLOG.md             # open platform work, ranked; plus settled rejections
+DISASTER-RECOVERY.md   # the box is gone: rebuild, restore, re-point DNS
+backup/
+  backup.sh            # nightly: quiesce, stage, snapshot, retain (restic)
+  maintenance.sh       # weekly: prune, then verify structure + 10% of the data
+  restore-drill.sh     # restore into a scratch volume and verify it
+  install.sh           # idempotent installer: restic, /opt/backups, timers
+  systemd/             # the two timers and their services
+  .env.example         # repository, retention, hand-off staleness threshold
+  README.md            # what is backed up, and the tenant hand-off contract
+  OPERATIONS.md        # restores, failure modes, and the restore drill log
 host/
   bootstrap.sh         # one-time host setup: Docker, edge network, ufw, SSH, swap, fail2ban
   README.md            # platform-vs-application boundary; read-only agent user

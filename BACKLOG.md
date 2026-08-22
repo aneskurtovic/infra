@@ -111,6 +111,19 @@ socket; converting them is a project with a real chance of breaking CI, and
 
 ## P1 — Everything the platform owns is one disk failure from gone · **Critical**
 
+> **Status 2026-08-22 — the fix is committed, and the box is unchanged.** The
+> platform backup stack now exists in [`backup/`](backup/): a nightly restic
+> snapshot of every platform volume and secret file, fourteen daily generations,
+> weekly `prune` + `check`, a tenant hand-off directory, a restore drill, and
+> [`DISASTER-RECOVERY.md`](DISASTER-RECOVERY.md).
+>
+> **Nothing has been installed or run.** No repository exists, no snapshot has
+> been taken, and no restore has been attempted, so every number in the evidence
+> below is still true of the live box. This item stays **Critical** and stays
+> open. The remaining work is not writing code — it is
+> `backup/install.sh`, one repository, one password stored off-box, and the
+> drill. See "Done when" for exactly what is left.
+
 **Problem.** A nightly Postgres dump exists and is well-engineered. It is also
 the *only* backup on the box, it belongs to a tenant, it keeps **one
 generation**, and it writes to **the same disk it protects against**. Every
@@ -150,30 +163,42 @@ Two aggravating details:
   does not exist.** Corrected on 2026-08-19 to a real manual procedure, but the
   underlying gap is this item.
 
-**Shape of the fix.** A platform-owned `backup/` stack:
+**Shape of the fix.** A platform-owned `backup/` stack — now written, see
+[`backup/README.md`](backup/README.md):
 
 - **restic** to a Hetzner Storage Box or S3-compatible bucket, repository
   encrypted, password held root-only under `/opt`. Restic gives dedup,
   encryption, `restic check` integrity verification, **and multiple generations**
   — the last of which the current script structurally cannot.
-- A **systemd timer**, so failures land in the journal Alloy already ships to
-  Loki, making "the backup failed" queryable rather than silent.
+- A **systemd timer**, so failures land in the journal Alloy ships to Loki,
+  making "the backup failed" queryable rather than silent.
 - A **tenant hand-off contract**: a documented directory a tenant's pre-backup
   hook writes a consistent dump into, which the platform sweeps off-site. The
   platform never learns what Postgres is; Ludo never learns what restic is.
 - Note that `/opt/backups` does not currently exist; `/opt/ludo/backups` (0700)
   is the tenant's own. Create the platform's root-only and keep them distinct.
 
+**One assumption in the sketch above was wrong, and is fixed alongside it.**
+"the journal Alloy already ships to Loki" — Alloy shipped no journal at all.
+`alloy/config.alloy` had a `loki.source.docker` and nothing else, so a systemd
+timer's failure would have gone to the journal and stopped there, invisible in
+Grafana, which is the exact silence this item is about. A `loki.source.journal`
+scoped to the platform's own units now exists; see **P4** for why it is scoped
+rather than shipping all 2.4 GB of journal.
+
 **Done when.**
 
-1. A scheduled run completes unattended and `restic snapshots` shows it.
-2. **≥7 daily generations** are retained, not one.
-3. `restic check` passes on a schedule, and failure is visible in Grafana (**P4**).
-4. **A restore has actually been performed** — a platform volume restored from
-   off-site into a scratch volume and verified, with the date written down.
-   Until this happens the item is not done, whatever the automation reports.
-5. `DISASTER-RECOVERY.md` exists: bootstrap → restore secrets → restore volumes
-   → re-point DNS.
+| # | Check | State |
+| --- | --- | --- |
+| 1 | A scheduled run completes unattended and `restic snapshots` shows it | **open** — nothing installed |
+| 2 | **≥7 daily generations** are retained, not one | written (`BACKUP_KEEP_DAILY=14`), unproven |
+| 3 | `restic check` passes on a schedule, and failure is visible in Grafana | written (weekly timer, journal → Loki); the *alert* still needs **P3**/**P4** |
+| 4 | **A restore has actually been performed** into a scratch volume, verified, dated | **open** — `backup/restore-drill.sh` exists, `backup/OPERATIONS.md` § Restore drill log says "never performed" |
+| 5 | `DISASTER-RECOVERY.md` exists: bootstrap → restore secrets → restore volumes → re-point DNS | ✅ done |
+
+Item 4 is the one that matters. Until it has a date, this stack is automation
+that has never been asked to produce the thing it exists for, and item 1 going
+green will make it *look* finished.
 
 **Not this.** Not backing up Loki — 7-day triage data, and `OPERATIONS.md`
 already settled that. Not backing up tenant databases directly. Not Hetzner
@@ -287,6 +312,12 @@ finding: not that the box is unhealthy, but that its health is unobserved.
 `prometheus.exporter.unix`, no `prometheus.scrape`, no remote-write. No
 Prometheus, Mimir, or VictoriaMetrics container exists.
 `observability/grafana/provisioning/datasources/` holds only `loki.yml`.
+
+*Updated 2026-08-22:* `loki.relabel` + `loki.source.journal` were added for the
+backup units (**P1**). That is still only logs — every word above about metrics
+is unchanged, and the journal source is scoped to a keep list precisely so it
+does not become a way to pretend otherwise. "The backup failed" is now a log
+line you can query; "disk is at 87%" is still nothing at all.
 
 **Shape of the fix.** Alloy is already running and is one block away from host
 metrics: `prometheus.exporter.unix` (node_exporter built in) and

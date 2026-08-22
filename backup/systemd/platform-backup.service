@@ -1,0 +1,34 @@
+[Unit]
+Description=Platform backup (restic) — CI database, certificates, dashboards, secrets
+Documentation=https://github.com/aneskurtovic/infra/blob/main/backup/OPERATIONS.md
+# Requires, not Wants: this run stops containers and reads docker volumes. With
+# the daemon down it cannot do either, and a unit that "succeeds" having backed
+# up nothing is the failure mode this whole item exists to prevent.
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/backups/backup.env
+ExecStart=/opt/backups/bin/backup.sh
+# The journal is the only place a failure is currently visible, so the identifier
+# is load-bearing: it is what Alloy keeps and what the Grafana query matches.
+#   {stack="platform", service="platform-backup"}
+SyslogIdentifier=platform-backup
+
+# Deprioritised, not starved. `IOSchedulingClass=idle` was the obvious choice and
+# is wrong here: this run holds CI and the dashboards STOPPED while it copies, so
+# an idle-class copy that yields to every other reader on the box extends the
+# downtime it is supposed to minimise.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# Long enough for a slow off-site upload of a first, undeduplicated snapshot;
+# short enough that a hung transfer is eventually reported as a failure rather
+# than sitting there until someone looks.
+TimeoutStartSec=3h
+
+[Install]
+WantedBy=multi-user.target

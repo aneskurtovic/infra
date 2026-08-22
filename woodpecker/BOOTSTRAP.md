@@ -226,10 +226,16 @@ Tuesday, not during an incident.
 
 ### Backing up `woodpecker-server-data`
 
-> **There is no automated host backup system yet.** An earlier version of this
-> section told you to "back up the volume with the host backup system," which
-> does not exist — see `BACKLOG.md` **P1**. Until it does, this is manual, and
-> nobody is doing it for you.
+> **A platform backup stack now exists in the repo — and has never been run on
+> this box.** [`../backup/`](../backup) takes a nightly off-site restic snapshot
+> of this volume, keeps fourteen generations, and verifies weekly. Until someone
+> installs it and completes a restore drill (`BACKLOG.md` **P1**), the only
+> backup of this volume is the manual one below, and nobody is doing it for you.
+>
+> Keep taking one before every upgrade regardless. It is immediate, it does not
+> depend on the network or on remembering a repository password, and "the thing
+> I am about to change" is exactly when a snapshot from up to 24 hours ago is
+> the wrong granularity.
 
 This volume holds Woodpecker's database: repository setup, **every
 per-repository deploy secret**, and build metadata. It is the most tedious thing

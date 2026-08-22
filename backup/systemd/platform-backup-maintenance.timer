@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly platform backup maintenance
+Documentation=https://github.com/aneskurtovic/infra/blob/main/backup/OPERATIONS.md
+
+[Timer]
+# Sunday 07:00 — well clear of both the 05:30 backup and the 05:00 tenant
+# cleanup. They share a lock anyway, so an overlap costs a skipped week rather
+# than a corrupted repository; the separation is so that never has to be tested.
+OnCalendar=Sun *-*-* 07:00:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=platform-backup-maintenance.service
+
+[Install]
+WantedBy=timers.target
