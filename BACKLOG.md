@@ -207,6 +207,22 @@ are excluded from server backups.
 
 ## P2 — The platform's disk safety is owned by a tenant · **High**
 
+> **Status 2026-08-22 — written, and the box is unchanged.** `host/bootstrap.sh`
+> now installs `platform-docker-cleanup.timer` (Sunday 03:00): `docker builder
+> prune -af` plus `docker image prune -af --filter until=168h`, never volumes,
+> escalating to an unfiltered image prune if the disk is still above 85%
+> afterwards. It logs disk usage before and after under
+> `platform-docker-cleanup`, which Alloy now ships to Loki — so the sawtooth is
+> a Grafana query rather than an SSH and a `df`.
+>
+> The tenant's timer is deliberately left in place. Whichever runs first
+> reclaims; the other finds nothing to do. The goal was never to delete it, it
+> was to make deleting it a non-event.
+>
+> **Nothing is installed on the box.** `bootstrap.sh` has to be re-run there.
+> Until then the platform's disk safety is still a tenant's timer, and the
+> graphing half of "Done when" still belongs to **P4**.
+
 **Problem.** The only mechanism preventing disk exhaustion on this box is a
 systemd timer installed by **Ludo's deploy script**. A change in a tenant repo
 can silently remove the platform's sole disk-reclamation mechanism. This is the
@@ -242,9 +258,14 @@ in **P8**. The tenant's timer can remain for tenant-specific concerns, but the
 platform must not depend on it. Then graph disk (**P4**) so the sawtooth is
 visible and a broken timer shows up as a trend, not a surprise.
 
-**Done when.** A platform-owned unit reclaims build cache on a schedule,
-`bootstrap.sh` installs it idempotently, disk % is graphed with an alert below
-85%, and removing the tenant's timer changes nothing about platform safety.
+**Done when.**
+
+| # | Check | State |
+| --- | --- | --- |
+| 1 | A platform-owned unit reclaims build cache on a schedule | written; **not installed on the box** |
+| 2 | `bootstrap.sh` installs it idempotently | ✅ done — units and script rewritten every run |
+| 3 | Disk % is graphed, with an alert below 85% | **open** — needs **P4**. The weekly run logs before/after and warns above 85%, which is seven data points a month, not a graph |
+| 4 | Removing the tenant's timer changes nothing about platform safety | true the moment 1 is installed |
 
 **Not this.** Not resizing the volume as the primary answer — that buys time and
 teaches nothing. Not pruning volumes automatically; the existing script's
@@ -506,6 +527,24 @@ before closing it out.
 
 ## P8 — Journal, daemon defaults, and a 124% memory commitment · **Medium**
 
+> **Status 2026-08-22 — (a) and (b) written, (c) untouched, box unchanged.**
+> `bootstrap.sh` now writes `/etc/systemd/journald.conf.d/99-platform.conf`
+> (`SystemMaxUse=500M`) as a drop-in rather than editing the distro's file, and
+> vacuums once so the 2.4 GB is actually returned instead of waiting for the
+> next rotation. It also writes `/etc/docker/daemon.json` with default log
+> limits and `live-restore: true`.
+>
+> Two decisions inside (b) worth keeping: the config is applied with
+> `systemctl reload docker`, **never** restart — a restart stops every container
+> including the proxy that owns `:80/:443`, which is precisely the outage
+> `live-restore` is being turned on to prevent. And an existing `daemon.json`
+> that differs is **left alone** with a warning and a diff: it is host-wide and
+> is where registry mirrors, DNS and storage-driver settings also live, so it is
+> the one place this script stops re-healing drift.
+>
+> **(c) is not addressed.** 124% memory commitment is still an open question and
+> still needs a decision rather than a patch — see below.
+
 Three host-level gaps that share a cause: `bootstrap.sh` configures ufw, swap,
 fail2ban, and unattended-upgrades, but never touches journald or Docker's daemon
 config.
@@ -557,9 +596,15 @@ graph swap (**P4**) so pressure is visible.
 Note the daemon log default applies to containers created **after** reload;
 existing ones keep their setting until recreated.
 
-**Done when.** `journalctl --disk-usage` stays under its cap, `daemon.json` is
-present and installed by bootstrap, a fresh CI step container shows a log limit,
-and swap is graphed.
+**Done when.**
+
+| # | Check | State |
+| --- | --- | --- |
+| a | `journalctl --disk-usage` stays under its cap | written; **not applied on the box** |
+| b | `daemon.json` present and installed by bootstrap | ✅ written and validated with `dockerd --validate` |
+| b | A fresh CI step container shows a log limit | **open** — verify on the box after the reload; existing containers keep their old setting until recreated |
+| c | Swap is graphed | **open** — **P4** |
+| c | 124% commitment is a decision, not an accident | **open** — nobody has decided |
 
 **Not this.** Not disabling the journal — it is the record when Loki is the thing
 that is broken. Not editing tenants' compose files; they are already correct.
@@ -974,6 +1019,25 @@ single server that was created by hand and is not being recreated.
 
 ## P20 — Host settings inherited rather than asserted · **Low**
 
+> **Status 2026-08-22 — network sysctls and time sync asserted; file limits
+> deliberately not.** `bootstrap.sh` writes the full
+> `/etc/sysctl.d/99-platform.conf` every run — `vm.swappiness` plus the three
+> measured network values and their `default.*` mirrors — and asserts
+> `timedatectl set-ntp true`.
+>
+> **This fixed a latent bug, not just a philosophical gap.** The old code wrote
+> that file *only* inside an `if swappiness != 10` branch, so on a box where the
+> runtime value was already 10 — set by hand, or by another drop-in — the file
+> was never created and the setting did not survive a reboot. "Idempotent" for a
+> persisted setting has to mean written every run, not written the first time it
+> looked wrong.
+>
+> The file-descriptor half is **left open on purpose**. It is the one item in
+> this group that is unexamined rather than inherited, and pinning a number
+> against a symptom nobody has seen is what this item's own "Not this" forbids.
+> `bootstrap.sh` now prints `fs.file-max` and dockerd's `LimitNOFILE` on every
+> run, so the measurement is in front of whoever runs it next.
+
 **Problem.** Several host-level protections are correct on this box **by Ubuntu
 default**, not because anything in this repo sets them. That is fine until a
 distro upgrade or a different image changes a default, at which point the
@@ -1008,6 +1072,9 @@ solving a problem you no longer have.
 **Done when.** `bootstrap.sh` asserts the network sysctls and file limits it
 currently inherits, and a fresh box gets them without depending on distro
 defaults.
+
+Sysctls and time sync: ✅ written. File limits: **open**, and open deliberately —
+they need a measured symptom first, and the script now reports the numbers.
 
 **Not this.** Not CrowdSec before **P14**. Not tuning sysctls that have no
 symptom — pin what is already correct; do not invent values.

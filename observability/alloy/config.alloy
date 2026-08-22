@@ -155,6 +155,12 @@ loki.source.docker "containers" {
 // ingest for no triage value, and sshd/kernel/fail2ban lines are already
 // available over SSH to anyone who can read them. Add a unit here when the
 // platform gains one worth watching from Grafana — deliberately, one at a time.
+//
+// platform-docker-cleanup logs disk usage before and after each weekly run, so
+// the build-cache sawtooth that BACKLOG.md P2 had to measure over SSH becomes a
+// query. It is a poor substitute for a real metric and it is not pretending
+// otherwise — P4 is what graphs disk. It is, however, seven data points a month
+// that nobody has to SSH for.
 loki.relabel "journal" {
 	// Empty on purpose: this component exists only to export `.rules` to the
 	// journal source below. It forwards nothing itself.
@@ -164,7 +170,7 @@ loki.relabel "journal" {
 	// only ever run on the handful of lines being kept.
 	rule {
 		source_labels = ["__journal__systemd_unit"]
-		regex         = "platform-backup(-maintenance)?\\.service"
+		regex         = "platform-(backup|backup-maintenance|docker-cleanup)\\.service"
 		action        = "keep"
 	}
 

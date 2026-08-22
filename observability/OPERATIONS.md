@@ -18,8 +18,11 @@ long-lived log path. This stack is for "what happened to this service recently"
 triage across the whole box, not for deep single-application forensics.
 
 Since 2026-08-22 it also ships the **systemd journal**, filtered to the
-platform's own units — today `platform-backup.service` and
-`platform-backup-maintenance.service`. Nothing else from the journal is
+platform's own units — today `platform-backup.service`,
+`platform-backup-maintenance.service` and `platform-docker-cleanup.service`.
+The last of those logs disk usage before and after each weekly run, so the
+build-cache sawtooth (`BACKLOG.md` **P2**) is a query rather than an SSH.
+Nothing else from the journal is
 collected: it is 2.4 GB with no cap (`BACKLOG.md` **P8**), and sshd/kernel/
 fail2ban lines earn nothing in Grafana that `journalctl` does not already give.
 
@@ -88,6 +91,7 @@ component:
 | `helifilm` | `helifilm` | `helifilm` |
 | `caddy`, `woodpecker-server`, `uptime-kuma`, … | `platform` | container name |
 | *(journal)* `platform-backup.service` | `platform` | `platform-backup` |
+| *(journal)* `platform-docker-cleanup.service` | `platform` | `platform-docker-cleanup` |
 
 The journal rows deliberately use the same two labels as containers, so a unit
 and a container are queried identically. They carry no `container` or `stream`
@@ -103,6 +107,13 @@ to make visible rather than silent.
 ```logql
 {stack="ludo-prod", service="backend"} |= "ERROR"
 {stack="platform", service="caddy"} | json | status >= 500
+
+# Disk usage over time, until P4 gives us a real metric. Seven points a month,
+# straight out of the weekly reclamation run.
+{stack="platform", service="platform-docker-cleanup"} |= "disk "
+
+# Anything the platform's own timers warned about — backup, reclamation, both.
+{stack="platform", service=~"platform-.+"} |= "WARN"
 {stack="helifilm"}
 {stack=~"ludo-.+"} |= "OutOfMemory"
 

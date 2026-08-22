@@ -1,7 +1,9 @@
 # Host bootstrap
 
-One-time, app-agnostic setup for a fresh box: Docker, the shared `edge` network,
-firewall, SSH hardening, swap, fail2ban, and unattended security upgrades.
+One-time, app-agnostic setup for a fresh box: Docker and its daemon defaults,
+the shared `edge` network, firewall, SSH hardening, swap, kernel settings, time
+sync, the journal cap, weekly Docker disk reclamation, fail2ban, and unattended
+security upgrades.
 
 ```bash
 sudo ./bootstrap.sh
@@ -17,27 +19,34 @@ Idempotent — re-running is safe and re-heals drifted settings.
 | Here (platform) | Not here (each application) |
 | --- | --- |
 | Docker engine + compose plugin | `/opt/<app>` directory trees |
+| **`/etc/docker/daemon.json`** — log limits + live restore | App-level logging config in their own compose |
 | The shared **`edge`** network | App-private networks (e.g. `app-network`) |
 | ufw rules for `22/80/443` | App compose stacks and their volumes |
 | SSH hardening, swap, fail2ban, auto-upgrades | App systemd units and log dirs |
+| **Kernel sysctls, time sync, the journald cap** | — |
+| **Docker disk reclamation** — build cache and unused images | App-specific cleanup (old releases, app log rotation) |
 | The backup *substrate* — off-site target, schedule, restore drill | Producing a consistent dump and handing it over |
 
 The dividing line: **if a second application would need it too, it belongs here.**
 Applications never publish container ports — they join `edge` and the proxy
 reaches them by container name, so the firewall never grows per-app holes.
 
-> **Known violation, as of 2026-08-19.** The line above is the intent, not yet
-> the state of the box. Three `/etc/systemd/system/` timers — `ludo-backup`,
-> `ludo-purge`, `ludo-docker-cleanup` — are installed by an *application's*
-> deploy script, and `ludo-docker-cleanup` (weekly `docker builder prune` +
-> `image prune`) is the **only** thing preventing box-wide disk exhaustion. A
-> change in that tenant's repo can silently remove the platform's sole disk
-> reclamation. Tracked as `BACKLOG.md` **P2**.
+> **Was a known violation; answered in the repo, not yet on the box.** Three
+> `/etc/systemd/system/` timers — `ludo-backup`, `ludo-purge`,
+> `ludo-docker-cleanup` — are installed by an *application's* deploy script, and
+> `ludo-docker-cleanup` was the **only** thing preventing box-wide disk
+> exhaustion, so a change in that tenant's repo could silently remove the
+> platform's sole reclamation path (`BACKLOG.md` **P2**).
 >
-> Two other host-level settings that belong here and are currently unset:
-> journald has no `SystemMaxUse=` (2.4 GB and climbing toward a ~3.8 GB default
-> cap), and there is no `/etc/docker/daemon.json` — so Docker's log-size default
-> is unbounded and `live-restore` is off. `BACKLOG.md` **P8**.
+> `bootstrap.sh` now installs `platform-docker-cleanup.timer` (Sunday 03:00),
+> along with the journald cap and the `/etc/docker/daemon.json` that were the
+> other two host settings missing on 2026-08-19 (**P8**). **None of it is on the
+> box until someone re-runs `bootstrap.sh` there** — this repo describes intent;
+> `systemctl list-timers` describes reality.
+>
+> The tenant's timer is deliberately **not** removed. Whichever runs first
+> reclaims and the other finds nothing to do; the point is that deleting the
+> tenant's changes nothing about platform safety.
 
 ## The read-only agent user
 
