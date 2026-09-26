@@ -23,6 +23,13 @@ services:
       WOODPECKER_REPO_OWNERS: ${WOODPECKER_REPO_OWNERS:?WOODPECKER_REPO_OWNERS is required}
       WOODPECKER_GITHUB: "true"
       WOODPECKER_GITHUB_CLIENT: ${WOODPECKER_GITHUB_CLIENT:?WOODPECKER_GITHUB_CLIENT is required}
+      # Send clone credentials for every repo, not only ones stored as private.
+      # 3.16's GitHub forge never syncs the private flag after activation (repair,
+      # relogin and webhooks all skip it), so a repo activated while public and
+      # made private later fails clone with "could not read Username". Every repo
+      # here is the operator's own and the clone plugin is the trusted default, so
+      # authenticating public clones exposes nothing new.
+      WOODPECKER_AUTHENTICATE_PUBLIC_REPOS: "true"
       # Open only for the one-time agent bootstrap, then flip back to true.
       WOODPECKER_DISABLE_USER_AGENT_REGISTRATION: ${WOODPECKER_DISABLE_USER_AGENT_REGISTRATION:-true}
       WOODPECKER_FORCE_IGNORE_SERVICE_FAILURE: "false"
